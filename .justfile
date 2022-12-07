@@ -1,6 +1,7 @@
 set windows-shell := ["pwsh.exe", "-NoLogo", "-Command"]
 
 alias p := push
+alias c := check
 
 default:
   @just --list
