@@ -31,10 +31,11 @@ pub fn decrypt(cipher_text: String, token: &[u8]) -> Result<String> {
     let xnonce: &[u8; 24] = token[27..51].try_into().unwrap();
     let cipher = XChaCha20Poly1305::new(xkey.as_ref().into());
     // decrypt
+    let decoded_cipher = base64::decode(cipher_text)?;
     let plain_text = cipher
-        .decrypt(xnonce[..].into(), cipher_text.as_bytes())
+        .decrypt(xnonce[..].into(), &decoded_cipher[..])
         .map_err(|err| anyhow!("Decrypting text: {}", err))?;
-    Ok(base64::encode(&plain_text))
+    String::from_utf8(plain_text).map_err(|err| anyhow!("Decrypting text: {}", err))
 }
 
 pub fn encrypt_file<P: AsRef<Path>>(source: P, dist: P, token: &[u8]) -> Result<()> {
@@ -137,7 +138,7 @@ mod tests {
     use blake2::digest::{Update, VariableOutput};
     use blake2::Blake2bVar;
 
-    use crate::encrypt;
+    use crate::{decrypt, encrypt};
 
     #[test]
     fn crypt_test() {
@@ -151,5 +152,7 @@ mod tests {
             cipher_text,
             "zGEeAhLTe+2D7lkYnP1fLL9e67L8aEqrJ94=".to_owned()
         );
+        let plain_text = decrypt("zGEeAhLTe+2D7lkYnP1fLL9e67L8aEqrJ94=".to_owned(), &buf).unwrap();
+        assert_eq!(plain_text, "plain_text".to_owned());
     }
 }
