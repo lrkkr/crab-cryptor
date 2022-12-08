@@ -7,6 +7,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.66"
+base64 = "0.13.1"
 blake2 = "0.10.5"
 chacha20poly1305 = { version = "0.10.1", features = ["stream"] }
 clap = { version = "4.0.29", features = ["derive"] }
+walkdir = "2.3.2"
