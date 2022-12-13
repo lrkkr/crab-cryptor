@@ -2,6 +2,7 @@ set windows-shell := ["pwsh.exe", "-NoLogo", "-Command"]
 
 alias p := push
 alias c := check
+alias i := install
 
 default:
   @just --list
@@ -18,3 +19,6 @@ push MESSAGE:
 
 check:
   pre-commit run --all-files
+
+install:
+  cargo install --path .
