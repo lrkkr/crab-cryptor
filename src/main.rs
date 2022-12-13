@@ -3,7 +3,7 @@ use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 use clap::{arg, value_parser, Command};
 use crypt::*;
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::PathBuf;
@@ -37,10 +37,15 @@ fn main() -> Result<()> {
         let walker = WalkDir::new(path).into_iter();
         let total_num_entries = walker.count();
         let bar = ProgressBar::new(total_num_entries.try_into()?);
+        bar.set_style(
+            ProgressStyle::with_template("[{duration_precise}] {wide_bar} {pos}/{len} {msg}")
+                .unwrap(),
+        );
         let entries: Vec<Result<walkdir::DirEntry, walkdir::Error>> =
             WalkDir::new(path).into_iter().collect();
         for entry in entries.into_iter().rev() {
             let entry = entry?;
+            bar.set_message(format!("{:?}", entry.path().iter().last().unwrap()));
             if entry.metadata()?.is_file() {
                 // check if already encrypted
                 let source = entry.path();
@@ -77,7 +82,7 @@ fn main() -> Result<()> {
             }
             bar.inc(1);
         }
-        bar.finish();
+        bar.finish_with_message("Done");
     }
     if let Some(token) = matches.get_one::<String>("decrypt") {
         // extend token
@@ -90,10 +95,15 @@ fn main() -> Result<()> {
         let walker = WalkDir::new(path).into_iter();
         let total_num_entries = walker.count();
         let bar = ProgressBar::new(total_num_entries.try_into()?);
+        bar.set_style(
+            ProgressStyle::with_template("[{duration_precise}] {wide_bar} {pos}/{len} {msg}")
+                .unwrap(),
+        );
         let entries: Vec<Result<walkdir::DirEntry, walkdir::Error>> =
             WalkDir::new(path).into_iter().collect();
         for entry in entries.into_iter().rev() {
             let entry = entry?;
+            bar.set_message(format!("{:?}", entry.path().iter().last().unwrap()));
             if entry.metadata()?.is_file() {
                 // check if already encrypted
                 let source = entry.path();
@@ -130,7 +140,7 @@ fn main() -> Result<()> {
             }
             bar.inc(1);
         }
-        bar.finish();
+        bar.finish_with_message("Done");
     }
     Ok(())
 }
