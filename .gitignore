@@ -2,3 +2,4 @@
 .vscode/
 test.txt
 *.crab
+data/

@@ -1,23 +1,31 @@
 use anyhow::Result;
 use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
-use clap::{arg, Command};
-use crypt::decrypt_file;
+use clap::{arg, value_parser, Command};
+use crypt::*;
 use indicatif::ProgressBar;
-use utils::get_dist_file_name;
+use std::ffi::OsStr;
+use std::fs::remove_file;
+use std::path::PathBuf;
 use walkdir::WalkDir;
 
 mod crypt;
-mod utils;
 
 fn main() -> Result<()> {
     let matches = Command::new("crab")
         .version("0.1")
         .author("xl_g <lr_kkr@outlook.com>")
         .about("A file cryptor")
+        .arg(arg!(-p --path <Path> "Selected path").value_parser(value_parser!(PathBuf)))
         .arg(arg!(-e --encrypt <Token> "Encrypt dir").required(false))
         .arg(arg!(-d --decrypt <Token> "Decrypt dir").required(false))
         .get_matches();
+
+    // get path in args
+    let path = matches
+        .get_one::<PathBuf>("path")
+        .expect("path is required");
+
     if let Some(token) = matches.get_one::<String>("encrypt") {
         // extend token
         let mut hasher = Blake2bVar::new(51).unwrap();
@@ -26,29 +34,31 @@ fn main() -> Result<()> {
         hasher.finalize_variable(&mut buf).unwrap();
         // walk dir
         // generate progress bar
-        let walker = WalkDir::new(".").into_iter();
+        let walker = WalkDir::new(path).into_iter();
         let total_num_entries = walker.count();
         let bar = ProgressBar::new(total_num_entries.try_into()?);
-        for entry in WalkDir::new(".").into_iter() {
+        for entry in WalkDir::new(path).into_iter() {
             let entry = entry?;
             if entry.metadata()?.is_file() {
                 // check if already encrypted
                 let source = entry.path();
                 let source_extension = source.extension();
                 let is_crab = match source_extension {
-                    Some(source_extension) => source_extension == "crab",
+                    Some(source_extension) => source_extension == OsStr::new("crab"),
                     None => false,
                 };
                 if is_crab {
                     continue;
                 }
-                let dist_file_name = get_dist_file_name(source, &buf)?;
-                println!("{}", dist_file_name);
+                let dist_file_name = get_encrypted_file_name(source, &buf)?;
+                // encrypt file
+                encrypt_file(source, dist_file_name, &buf)?;
+                // remove original file
+                remove_file(source)?;
             }
             bar.inc(1);
         }
         bar.finish();
-        // encrypt_file("test.txt", "test.txt.crab", &buf)?;
     }
     if let Some(token) = matches.get_one::<String>("decrypt") {
         // extend token
@@ -57,7 +67,32 @@ fn main() -> Result<()> {
         let mut buf = [0u8; 51];
         hasher.finalize_variable(&mut buf).unwrap();
         // walk dir
-        decrypt_file("test.txt.crab", "test.txt", &buf)?;
+        // generate progress bar
+        let walker = WalkDir::new(path).into_iter();
+        let total_num_entries = walker.count();
+        let bar = ProgressBar::new(total_num_entries.try_into()?);
+        for entry in WalkDir::new(path).into_iter() {
+            let entry = entry?;
+            if entry.metadata()?.is_file() {
+                // check if already encrypted
+                let source = entry.path();
+                let source_extension = source.extension();
+                let is_crab = match source_extension {
+                    Some(source_extension) => source_extension == OsStr::new("crab"),
+                    None => false,
+                };
+                if !is_crab {
+                    continue;
+                }
+                let dist_file_name = get_decrypted_file_name(source, &buf)?;
+                // decrypt file
+                decrypt_file(source, dist_file_name, &buf)?;
+                // remove original file
+                remove_file(source)?;
+            }
+            bar.inc(1);
+        }
+        bar.finish();
     }
     Ok(())
 }
