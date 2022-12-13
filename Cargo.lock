@@ -165,7 +165,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "crab"
+name = "crab-cryptor"
 version = "0.3.0"
 dependencies = [
  "anyhow",

@@ -1,7 +1,13 @@
 [package]
-name = "crab"
+name = "crab-cryptor"
 version = "0.3.0"
 edition = "2021"
+authors = ["xl_g <lr_kkr@outlook.com>"]
+description = "A simple file cryptor"
+repository = "https://github.com/lrkkr/crab-cryptor"
+readme = "README.md"
+keywords = ["cli", "encrypt", "decrypt"]
+categories = ["cryptography", "command-line-utilities", "filesystem"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

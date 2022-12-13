@@ -13,7 +13,7 @@ mod crypt;
 
 fn main() -> Result<()> {
     let matches = Command::new("crab")
-        .version("0.1")
+        .version("0.3.0")
         .author("xl_g <lr_kkr@outlook.com>")
         .about("A file cryptor")
         .arg(arg!(-p --path <Path> "Selected path").value_parser(value_parser!(PathBuf)))
