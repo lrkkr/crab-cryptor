@@ -5,7 +5,7 @@ use clap::{arg, value_parser, Command};
 use crypt::*;
 use indicatif::ProgressBar;
 use std::ffi::OsStr;
-use std::fs::remove_file;
+use std::fs;
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
@@ -37,7 +37,9 @@ fn main() -> Result<()> {
         let walker = WalkDir::new(path).into_iter();
         let total_num_entries = walker.count();
         let bar = ProgressBar::new(total_num_entries.try_into()?);
-        for entry in WalkDir::new(path).into_iter() {
+        let entries: Vec<Result<walkdir::DirEntry, walkdir::Error>> =
+            WalkDir::new(path).into_iter().collect();
+        for entry in entries.into_iter().rev() {
             let entry = entry?;
             if entry.metadata()?.is_file() {
                 // check if already encrypted
@@ -50,11 +52,28 @@ fn main() -> Result<()> {
                 if is_crab {
                     continue;
                 }
-                let dist_file_name = get_encrypted_file_name(source, &buf)?;
+                let dist_file_name = encrypt_file_name(source, &buf)?;
                 // encrypt file
                 encrypt_file(source, dist_file_name, &buf)?;
                 // remove original file
-                remove_file(source)?;
+                fs::remove_file(source)?;
+            } else if entry.metadata()?.is_dir() {
+                // check if already encrypted
+                let source = entry.path();
+                if source == path {
+                    continue;
+                }
+                let source_string = source.to_str();
+                let is_crab = match source_string {
+                    Some(source_string) => source_string.ends_with("[crab]"),
+                    None => false,
+                };
+                if is_crab {
+                    continue;
+                }
+                let encrypted_dir_name = encrypt_dir_name(source, &buf)?;
+                // remove original file
+                fs::rename(source, encrypted_dir_name)?;
             }
             bar.inc(1);
         }
@@ -71,7 +90,9 @@ fn main() -> Result<()> {
         let walker = WalkDir::new(path).into_iter();
         let total_num_entries = walker.count();
         let bar = ProgressBar::new(total_num_entries.try_into()?);
-        for entry in WalkDir::new(path).into_iter() {
+        let entries: Vec<Result<walkdir::DirEntry, walkdir::Error>> =
+            WalkDir::new(path).into_iter().collect();
+        for entry in entries.into_iter().rev() {
             let entry = entry?;
             if entry.metadata()?.is_file() {
                 // check if already encrypted
@@ -84,11 +105,28 @@ fn main() -> Result<()> {
                 if !is_crab {
                     continue;
                 }
-                let dist_file_name = get_decrypted_file_name(source, &buf)?;
+                let dist_file_name = decrypt_file_name(source, &buf)?;
                 // decrypt file
                 decrypt_file(source, dist_file_name, &buf)?;
                 // remove original file
-                remove_file(source)?;
+                fs::remove_file(source)?;
+            } else if entry.metadata()?.is_dir() {
+                // check if already encrypted
+                let source = entry.path();
+                if source == path {
+                    continue;
+                }
+                let source_string = source.to_str();
+                let is_crab = match source_string {
+                    Some(source_string) => source_string.ends_with("[crab]"),
+                    None => false,
+                };
+                if !is_crab {
+                    continue;
+                }
+                let decrypted_dir_name = decrypt_dir_name(source, &buf)?;
+                // remove original file
+                fs::rename(source, decrypted_dir_name)?;
             }
             bar.inc(1);
         }

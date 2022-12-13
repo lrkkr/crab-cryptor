@@ -102,7 +102,7 @@ pub fn decrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
     Ok(())
 }
 
-pub fn get_encrypted_file_name(source: &Path, token: &[u8]) -> Result<String> {
+pub fn encrypt_file_name(source: &Path, token: &[u8]) -> Result<String> {
     let source_file_name = source
         .file_name()
         .ok_or_else(|| anyhow!("Failed to get source file name"))?
@@ -124,7 +124,7 @@ pub fn get_encrypted_file_name(source: &Path, token: &[u8]) -> Result<String> {
     ))
 }
 
-pub fn get_decrypted_file_name(source: &Path, token: &[u8]) -> Result<String> {
+pub fn decrypt_file_name(source: &Path, token: &[u8]) -> Result<String> {
     let source_file_stem = source
         .file_stem()
         .ok_or_else(|| anyhow!("Failed to get source file name"))?
@@ -140,4 +140,46 @@ pub fn get_decrypted_file_name(source: &Path, token: &[u8]) -> Result<String> {
         .parent()
         .ok_or_else(|| anyhow!("Failed to get dir name"))?;
     Ok(format!("{}", dir_name.join(decrypted_file_name).display()))
+}
+
+pub fn encrypt_dir_name(source: &Path, token: &[u8]) -> Result<String> {
+    let source_dir_name = source
+        .iter()
+        .last()
+        .ok_or_else(|| anyhow!("Failed to get source dir name"))?
+        .to_str()
+        .ok_or_else(|| anyhow!("Failed to get source dir name"))?
+        .to_owned();
+    // encrypt dist dir name
+    let encrypted_dir_name = encrypt(source_dir_name, token)?;
+    // fix / in encrypted_dir_name
+    let re = Regex::new(r"/").unwrap();
+    let encrypted_dir_name = re.replace_all(&encrypted_dir_name, "_").to_string();
+    // get dir name
+    let dir_name = source
+        .parent()
+        .ok_or_else(|| anyhow!("Failed to get dir name"))?;
+    Ok(format!(
+        "{}[crab]",
+        dir_name.join(encrypted_dir_name).display()
+    ))
+}
+
+pub fn decrypt_dir_name(source: &Path, token: &[u8]) -> Result<String> {
+    let source_dir_name = source
+        .iter()
+        .last()
+        .ok_or_else(|| anyhow!("Failed to get source dir name"))?
+        .to_str()
+        .ok_or_else(|| anyhow!("Failed to get source dir name"))?;
+    let source_dir_name = source_dir_name[..source_dir_name.len() - 6].to_owned();
+    let re = Regex::new(r"_").unwrap();
+    let source_dir_name = re.replace_all(&source_dir_name, "/").to_string();
+    // decrypt dist dir name
+    let decrypted_dir_name = decrypt(source_dir_name, token)?;
+    // get dir name
+    let dir_name = source
+        .parent()
+        .ok_or_else(|| anyhow!("Failed to get dir name"))?;
+    Ok(format!("{}", dir_name.join(decrypted_dir_name).display()))
 }
