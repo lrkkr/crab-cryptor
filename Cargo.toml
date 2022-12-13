@@ -9,7 +9,6 @@ readme = "README.md"
 keywords = ["cli", "encrypt", "decrypt"]
 categories = ["cryptography", "command-line-utilities", "filesystem"]
 license = "MIT"
-license-file = "LICENSE.txt"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
