@@ -1,4 +1,4 @@
-# crab
+# crab-cryptor
 
 ## About
 
@@ -15,13 +15,13 @@ cargo install crab-cryptor
 ### Encrypt
 
 ```bash
-crab -e superKey -p path/to/
+crab-cryptor -e superKey -p path/to/
 ```
 
 ### Decrypt
 
 ```bash
-crab -d superKey -p path/to/
+crab-cryptor -d superKey -p path/to/
 ```
 
 ## License

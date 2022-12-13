@@ -12,7 +12,7 @@ use walkdir::WalkDir;
 mod crypt;
 
 fn main() -> Result<()> {
-    let matches = Command::new("crab")
+    let matches = Command::new("crab-cryptor")
         .version("0.3.0")
         .author("xl_g <lr_kkr@outlook.com>")
         .about("A file cryptor")
