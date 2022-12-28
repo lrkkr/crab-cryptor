@@ -19,7 +19,7 @@ pub fn encrypt(plain_text: String, token: &[u8]) -> Result<String> {
     let cipher_text = cipher
         .encrypt(xnonce[..].into(), plain_text.as_bytes())
         .map_err(|err| anyhow!("Encrypting text: {}", err))?;
-    Ok(base64::encode(&cipher_text))
+    Ok(base64::encode(cipher_text))
 }
 
 pub fn decrypt(cipher_text: String, token: &[u8]) -> Result<String> {

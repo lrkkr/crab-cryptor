@@ -13,7 +13,7 @@ mod crypt;
 
 fn main() -> Result<()> {
     let matches = Command::new("crab-cryptor")
-        .version("0.3.0")
+        .version("0.3.2")
         .author("xl_g <lr_kkr@outlook.com>")
         .about("A file cryptor")
         .arg(arg!(-p --path <Path> "Selected path").value_parser(value_parser!(PathBuf)))
@@ -38,14 +38,17 @@ fn main() -> Result<()> {
         let total_num_entries = walker.count();
         let bar = ProgressBar::new(total_num_entries.try_into()?);
         bar.set_style(
-            ProgressStyle::with_template("[{duration_precise}] {wide_bar} {pos}/{len} {msg}")
-                .unwrap(),
+            ProgressStyle::with_template(
+                "{spinner} {msg}\n{wide_bar} {pos}/{len} in {duration} eta {eta}",
+            )
+            .unwrap(),
         );
         let entries: Vec<Result<walkdir::DirEntry, walkdir::Error>> =
             WalkDir::new(path).into_iter().collect();
         for entry in entries.into_iter().rev() {
             let entry = entry?;
-            bar.set_message(format!("{:?}", entry.path().iter().last().unwrap()));
+            let msg = entry.path().iter().last().unwrap();
+            bar.set_message(format!("{:?}", msg));
             if entry.metadata()?.is_file() {
                 // check if already encrypted
                 let source = entry.path();
@@ -96,14 +99,17 @@ fn main() -> Result<()> {
         let total_num_entries = walker.count();
         let bar = ProgressBar::new(total_num_entries.try_into()?);
         bar.set_style(
-            ProgressStyle::with_template("[{duration_precise}] {wide_bar} {pos}/{len} {msg}")
-                .unwrap(),
+            ProgressStyle::with_template(
+                "{spinner} {msg}\n{wide_bar} {pos}/{len} in {duration} eta {eta}",
+            )
+            .unwrap(),
         );
         let entries: Vec<Result<walkdir::DirEntry, walkdir::Error>> =
             WalkDir::new(path).into_iter().collect();
         for entry in entries.into_iter().rev() {
             let entry = entry?;
-            bar.set_message(format!("{:?}", entry.path().iter().last().unwrap()));
+            let msg = entry.path().iter().last().unwrap();
+            bar.set_message(format!("{:?}", msg));
             if entry.metadata()?.is_file() {
                 // check if already encrypted
                 let source = entry.path();
