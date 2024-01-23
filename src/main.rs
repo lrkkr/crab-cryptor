@@ -22,7 +22,11 @@ fn main() -> Result<()> {
         .version(VERSION)
         .author("xl_g <lr_kkr@outlook.com>")
         .about("A file cryptor")
-        .arg(arg!(-p --path <Path> "Selected path").value_parser(value_parser!(PathBuf)))
+        .arg(
+            arg!(-p --path <Path> "Selected path")
+                .value_parser(value_parser!(PathBuf))
+                .required(true),
+        )
         .arg(arg!(-e --encrypt <Token> "Encrypt dir").required(false))
         .arg(arg!(-d --decrypt <Token> "Decrypt dir").required(false))
         .get_matches();
