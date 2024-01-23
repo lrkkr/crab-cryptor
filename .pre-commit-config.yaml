@@ -1,3 +1,4 @@
+exclude: ^(CHANGELOG.md)
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v3.2.0
@@ -14,7 +15,6 @@ repos:
       - id: end-of-file-fixer
       - id: mixed-line-ending
       - id: trailing-whitespace
-    exclude: "^CHANGELOG.md"
   - repo: https://github.com/crate-ci/typos
     rev: v1.8.1
     hooks:
