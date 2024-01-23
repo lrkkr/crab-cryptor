@@ -11,13 +11,15 @@ use walkdir::WalkDir;
 
 mod crypt;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn main() -> Result<()> {
     static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA512;
     const PBKDF2_SALT: &[u8] = b"crab";
     const PBKDF2_KEY_LEN: usize = 51;
     let pbkdf2_iters: NonZeroU32 = NonZeroU32::new(100_000).unwrap();
     let matches = Command::new("crab")
-        .version("1.0.0")
+        .version(VERSION)
         .author("xl_g <lr_kkr@outlook.com>")
         .about("A file cryptor")
         .arg(arg!(-p --path <Path> "Selected path").value_parser(value_parser!(PathBuf)))
