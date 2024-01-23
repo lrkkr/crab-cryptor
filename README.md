@@ -15,13 +15,13 @@ cargo install crab-cryptor
 ### Encrypt
 
 ```bash
-crab-cryptor -e superKey -p path/to/
+crab -e superKey -p path/to/
 ```
 
 ### Decrypt
 
 ```bash
-crab-cryptor -d superKey -p path/to/
+crab -d superKey -p path/to/
 ```
 
 ## License
@@ -30,4 +30,4 @@ MIT license
 
 ## Reference
 
-* [Rust file encryption](https://kerkour.com/rust-file-encryption)
+- [Rust file encryption](https://kerkour.com/rust-file-encryption)
