@@ -13,12 +13,27 @@ dev:
 
 # git add, commit and push
 push MESSAGE:
+  git cliff --bump --with-commit "{{ MESSAGE }}" -o CHANGELOG.md
   git add .
   git commit -m "{{ MESSAGE }}"
   git push
+
+tag TAG:
+  git tag {{ TAG }}
+  git push origin {{ TAG }}
+
+del_tag TAG:
+  git tag -d {{ TAG }}
+  git push origin :refs/tags/{{ TAG }}
+
+del_branch BRANCH:
+  git branch -d {{ BRANCH }}
 
 check:
   pre-commit run --all-files
 
 install:
   cargo install --path .
+
+test:
+  cargo test -- --nocapture

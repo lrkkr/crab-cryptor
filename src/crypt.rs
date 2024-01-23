@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use base64::prelude::*;
 use chacha20poly1305::{
     aead::{stream, Aead},
     KeyInit, XChaCha20Poly1305,
@@ -19,7 +20,7 @@ pub fn encrypt(plain_text: String, token: &[u8]) -> Result<String> {
     let cipher_text = cipher
         .encrypt(xnonce[..].into(), plain_text.as_bytes())
         .map_err(|err| anyhow!("Encrypting text: {}", err))?;
-    Ok(base64::encode(cipher_text))
+    Ok(BASE64_STANDARD.encode(cipher_text))
 }
 
 pub fn decrypt(cipher_text: String, token: &[u8]) -> Result<String> {
@@ -28,7 +29,7 @@ pub fn decrypt(cipher_text: String, token: &[u8]) -> Result<String> {
     let xnonce: &[u8; 24] = token[27..51].try_into().unwrap();
     let cipher = XChaCha20Poly1305::new(xkey.as_ref().into());
     // decrypt
-    let decoded_cipher = base64::decode(cipher_text)?;
+    let decoded_cipher = BASE64_STANDARD.decode(cipher_text)?;
     let plain_text = cipher
         .decrypt(xnonce[..].into(), &decoded_cipher[..])
         .map_err(|err| anyhow!("Decrypting text: {}", err))?;

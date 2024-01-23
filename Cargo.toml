@@ -10,14 +10,16 @@ keywords = ["cli", "encrypt", "decrypt"]
 categories = ["cryptography", "command-line-utilities", "filesystem"]
 license = "MIT"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 anyhow = "1.0.66"
-base64 = "0.13.1"
-blake2 = "0.10.5"
+base64 = "0.21"
 chacha20poly1305 = { version = "0.10.1", features = ["stream"] }
 clap = { version = "4.0.29", features = ["derive"] }
 indicatif = "0.17.2"
 regex = "1.7.0"
+ring = "0.17.7"
 walkdir = "2.3.2"
+
+[[bin]]
+name = "crab"
+path = "src/main.rs"

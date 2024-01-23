@@ -1,18 +1,22 @@
 use anyhow::Result;
-use blake2::digest::{Update, VariableOutput};
-use blake2::Blake2bVar;
 use clap::{arg, value_parser, Command};
 use crypt::*;
 use indicatif::{ProgressBar, ProgressStyle};
+use ring::pbkdf2;
 use std::ffi::OsStr;
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
 mod crypt;
 
 fn main() -> Result<()> {
-    let matches = Command::new("crab-cryptor")
+    static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA512;
+    const PBKDF2_SALT: &[u8] = b"crab";
+    const PBKDF2_KEY_LEN: usize = 51;
+    let pbkdf2_iters: NonZeroU32 = NonZeroU32::new(100_000).unwrap();
+    let matches = Command::new("crab")
         .version("0.3.2")
         .author("xl_g <lr_kkr@outlook.com>")
         .about("A file cryptor")
@@ -28,10 +32,14 @@ fn main() -> Result<()> {
 
     if let Some(token) = matches.get_one::<String>("encrypt") {
         // extend token
-        let mut hasher = Blake2bVar::new(51).unwrap();
-        hasher.update(token.as_bytes());
-        let mut buf = [0u8; 51];
-        hasher.finalize_variable(&mut buf).unwrap();
+        let mut buf = vec![0u8; PBKDF2_KEY_LEN];
+        pbkdf2::derive(
+            PBKDF2_ALG,
+            pbkdf2_iters,
+            PBKDF2_SALT,
+            token.as_bytes(),
+            &mut buf,
+        );
         // walk dir
         // generate progress bar
         let walker = WalkDir::new(path).into_iter();
@@ -89,10 +97,14 @@ fn main() -> Result<()> {
     }
     if let Some(token) = matches.get_one::<String>("decrypt") {
         // extend token
-        let mut hasher = Blake2bVar::new(51).unwrap();
-        hasher.update(token.as_bytes());
-        let mut buf = [0u8; 51];
-        hasher.finalize_variable(&mut buf).unwrap();
+        let mut buf = vec![0u8; PBKDF2_KEY_LEN];
+        pbkdf2::derive(
+            PBKDF2_ALG,
+            pbkdf2_iters,
+            PBKDF2_SALT,
+            token.as_bytes(),
+            &mut buf,
+        );
         // walk dir
         // generate progress bar
         let walker = WalkDir::new(path).into_iter();
@@ -153,24 +165,31 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use blake2::digest::{Update, VariableOutput};
-    use blake2::Blake2bVar;
-
     use crate::crypt::{decrypt, encrypt};
+    use ring::pbkdf2;
+    use std::num::NonZeroU32;
 
     #[test]
     fn crypt_test() {
+        static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA512;
+        const PBKDF2_SALT: &[u8] = b"crab";
+        const PBKDF2_KEY_LEN: usize = 51;
+        let pbkdf2_iters: NonZeroU32 = NonZeroU32::new(100_000).unwrap();
         let token = String::from("crab");
-        let mut hasher = Blake2bVar::new(51).unwrap();
-        hasher.update(token.as_bytes());
-        let mut buf = [0u8; 51];
-        hasher.finalize_variable(&mut buf).unwrap();
+        let mut buf = vec![0u8; PBKDF2_KEY_LEN];
+        pbkdf2::derive(
+            PBKDF2_ALG,
+            pbkdf2_iters,
+            PBKDF2_SALT,
+            token.as_bytes(),
+            &mut buf,
+        );
         let cipher_text = encrypt("plain_text".to_owned(), &buf).unwrap();
         assert_eq!(
             cipher_text,
-            "zGEeAhLTe+2D7lkYnP1fLL9e67L8aEqrJ94=".to_owned()
+            "MF8gUHeKK45ZVNknudk2YLjFl5j3F82xHDI=".to_owned()
         );
-        let plain_text = decrypt("zGEeAhLTe+2D7lkYnP1fLL9e67L8aEqrJ94=".to_owned(), &buf).unwrap();
+        let plain_text = decrypt("MF8gUHeKK45ZVNknudk2YLjFl5j3F82xHDI=".to_owned(), &buf).unwrap();
         assert_eq!(plain_text, "plain_text".to_owned());
     }
 }
