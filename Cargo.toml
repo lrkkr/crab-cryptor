@@ -1,6 +1,6 @@
 [package]
 name = "crab-cryptor"
-version = "0.3.2"
+version = "1.0.0"
 edition = "2021"
 authors = ["xl_g <lr_kkr@outlook.com>"]
 description = "A simple file cryptor"
