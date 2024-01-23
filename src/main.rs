@@ -17,7 +17,7 @@ fn main() -> Result<()> {
     const PBKDF2_KEY_LEN: usize = 51;
     let pbkdf2_iters: NonZeroU32 = NonZeroU32::new(100_000).unwrap();
     let matches = Command::new("crab")
-        .version("0.3.2")
+        .version("1.0.0")
         .author("xl_g <lr_kkr@outlook.com>")
         .about("A file cryptor")
         .arg(arg!(-p --path <Path> "Selected path").value_parser(value_parser!(PathBuf)))
