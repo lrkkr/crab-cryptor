@@ -1,6 +1,6 @@
 [package]
 name = "crab-cryptor"
-version = "1.0.1"
+version = "2.0.0"
 edition = "2021"
 authors = ["xl_g <lr_kkr@outlook.com>"]
 description = "A simple file cryptor"
@@ -12,11 +12,11 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0.66"
-base64 = "0.21"
+base64 = "0.22"
 chacha20poly1305 = { version = "0.10.1", features = ["stream"] }
-clap = { version = "4.0.29", features = ["derive"] }
 indicatif = "0.17.2"
-regex = "1.7.0"
+inquire = "0.7.4"
+os_str_bytes = "7.0.0"
 ring = "0.17.7"
 walkdir = "2.3.2"
 

@@ -13,7 +13,7 @@ dev:
 
 # git add, commit and push
 push MESSAGE:
-  git cliff --bump --with-commit "{{ MESSAGE }}" -o CHANGELOG.md
+  git cliff --with-commit "{{ MESSAGE }}" -o CHANGELOG.md
   git add .
   git commit -m "{{ MESSAGE }}"
   git push
