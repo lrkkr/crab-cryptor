@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Documentation
+
+- Update doc
+
 ### Features
 
 - Add input prompt & url-safe encoding & osstr bytes
