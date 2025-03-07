@@ -17,7 +17,7 @@ chacha20poly1305 = { version = "0.10.1", features = ["stream"] }
 indicatif = "0.17.2"
 inquire = "0.7.4"
 os_str_bytes = "7.0.0"
-ring = "0.17.7"
+ring = "0.17.12"
 walkdir = "2.3.2"
 
 [[bin]]
