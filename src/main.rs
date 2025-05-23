@@ -64,7 +64,7 @@ fn main() -> Result<()> {
                     WalkDir::new(path).into_iter().collect();
                 for entry in entries.into_iter().rev() {
                     let entry = entry?;
-                    let msg = entry.path().iter().last().unwrap();
+                    let msg = entry.path().iter().next_back().unwrap();
                     bar.set_message(format!("{:?}", msg));
                     if entry.metadata()?.is_file() {
                         // check if already encrypted
@@ -79,9 +79,16 @@ fn main() -> Result<()> {
                         }
                         let dist_file_name = encrypt_file_name(source, &buf)?;
                         // encrypt file
-                        encrypt_file(source, dist_file_name, &buf)?;
-                        // remove original file
-                        fs::remove_file(source)?;
+                        let encrypt_res = encrypt_file(source, dist_file_name, &buf);
+                        match encrypt_res {
+                            Ok(_) => {
+                                // remove original file
+                                fs::remove_file(source)?;
+                            }
+                            Err(e) => {
+                                println!("Failed to encrypt file {:?} with Error: {:?}", source, e);
+                            }
+                        }
                     } else if entry.metadata()?.is_dir() {
                         // check if already encrypted
                         let source = entry.path();
@@ -129,7 +136,7 @@ fn main() -> Result<()> {
                     WalkDir::new(path).into_iter().collect();
                 for entry in entries.into_iter().rev() {
                     let entry = entry?;
-                    let msg = entry.path().iter().last().unwrap();
+                    let msg = entry.path().iter().next_back().unwrap();
                     bar.set_message(format!("{:?}", msg));
                     if entry.metadata()?.is_file() {
                         // check if already encrypted

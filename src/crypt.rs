@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use anyhow::{anyhow, Result};
 use base64::{
     alphabet,
@@ -8,13 +9,15 @@ use chacha20poly1305::{
     aead::{stream, Aead},
     KeyInit, XChaCha20Poly1305,
 };
+use flate2::{write::GzEncoder, Compression};
 use os_str_bytes::OsStrBytes;
 use std::ffi::{OsStr, OsString};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{
     fs::File,
     io::{Read, Write},
 };
+use tar::{Archive, Builder};
 
 pub fn encrypt(plain_text: &[u8], token: &[u8]) -> Result<String> {
     // init encryptor
@@ -53,18 +56,37 @@ pub fn encrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
     dist: Q,
     token: &[u8],
 ) -> Result<()> {
-    // init encryptor
+    // Create temp file for compressed data
+    let temp_path = PathBuf::from(dist.as_ref()).with_extension("tmp");
+
+    // Compress source file to temp file (tar + gz)
+    {
+        let source_file = File::open(source.as_ref())?;
+        let temp_file = File::create(&temp_path)?;
+        let gz_encoder = GzEncoder::new(temp_file, Compression::default());
+        let mut tar_builder = Builder::new(gz_encoder);
+
+        let file_name = source
+            .as_ref()
+            .file_name()
+            .ok_or_else(|| anyhow!("Failed to get source file name"))?;
+        tar_builder.append_file(file_name, &mut source_file.try_clone()?)?;
+        tar_builder.finish()?;
+    }
+
+    // Encrypt the compressed temp file
     let xkey: &[u8; 32] = token[..32].try_into().unwrap();
     let xnonce: &[u8; 19] = token[32..51].try_into().unwrap();
     let aead = XChaCha20Poly1305::new(xkey.as_ref().into());
     let mut stream_encryptor = stream::EncryptorBE32::from_aead(aead, xnonce.as_ref().into());
-    // encrypt each part
+
     const BUFFER_LEN: usize = 500;
     let mut buffer = [0u8; BUFFER_LEN];
-    let mut source_file = File::open(source.as_ref())?;
+    let mut temp_file = File::open(&temp_path)?;
     let mut dist_file = File::create(dist.as_ref())?;
+
     loop {
-        let read_count = source_file.read(&mut buffer)?;
+        let read_count = temp_file.read(&mut buffer)?;
         if read_count == BUFFER_LEN {
             let cipher_text = stream_encryptor
                 .encrypt_next(buffer.as_slice())
@@ -78,6 +100,9 @@ pub fn encrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
             break;
         }
     }
+
+    // Clean up temp file
+    std::fs::remove_file(temp_path)?;
     Ok(())
 }
 
@@ -86,32 +111,55 @@ pub fn decrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
     dist: Q,
     token: &[u8],
 ) -> Result<()> {
-    // init encryptor
-    let xkey: &[u8; 32] = token[..32].try_into().unwrap();
-    let xnonce: &[u8; 19] = token[32..51].try_into().unwrap();
-    let aead = XChaCha20Poly1305::new(xkey.as_ref().into());
-    let mut stream_decryptor = stream::DecryptorBE32::from_aead(aead, xnonce.as_ref().into());
-    const BUFFER_LEN: usize = 500 + 16;
-    let mut buffer = [0u8; BUFFER_LEN];
-    let mut encrypted_file = File::open(source.as_ref())?;
-    let mut dist_file = File::create(dist.as_ref())?;
-    loop {
-        let read_count = encrypted_file.read(&mut buffer)?;
-        if read_count == BUFFER_LEN {
-            let plain_text = stream_decryptor
-                .decrypt_next(buffer.as_slice())
-                .map_err(|err| anyhow!("Decrypting file: {}", err))?;
-            dist_file.write_all(&plain_text)?;
-        } else if read_count == 0 {
-            break;
-        } else {
-            let plain_text = stream_decryptor
-                .decrypt_last(&buffer[..read_count])
-                .map_err(|err| anyhow!("Decrypting file: {}", err))?;
-            dist_file.write_all(&plain_text)?;
-            break;
+    // Create temp file for decrypted data
+    let temp_path = PathBuf::from(dist.as_ref()).with_extension("tmp");
+
+    // Decrypt source file to temp file
+    {
+        let xkey: &[u8; 32] = token[..32].try_into().unwrap();
+        let xnonce: &[u8; 19] = token[32..51].try_into().unwrap();
+        let aead = XChaCha20Poly1305::new(xkey.as_ref().into());
+        let mut stream_decryptor = stream::DecryptorBE32::from_aead(aead, xnonce.as_ref().into());
+
+        const BUFFER_LEN: usize = 500 + 16;
+        let mut buffer = [0u8; BUFFER_LEN];
+        let mut encrypted_file = File::open(source.as_ref())?;
+        let mut temp_file = File::create(&temp_path)?;
+
+        loop {
+            let read_count = encrypted_file.read(&mut buffer)?;
+            if read_count == BUFFER_LEN {
+                let plain_text = stream_decryptor
+                    .decrypt_next(buffer.as_slice())
+                    .map_err(|err| anyhow!("Decrypting file: {}", err))?;
+                temp_file.write_all(&plain_text)?;
+            } else if read_count == 0 {
+                break;
+            } else {
+                let plain_text = stream_decryptor
+                    .decrypt_last(&buffer[..read_count])
+                    .map_err(|err| anyhow!("Decrypting file: {}", err))?;
+                temp_file.write_all(&plain_text)?;
+                break;
+            }
         }
     }
+
+    // Decompress temp file to destination
+    {
+        let temp_file = File::open(&temp_path)?;
+        let gz_decoder = flate2::read::GzDecoder::new(temp_file);
+        let mut archive = Archive::new(gz_decoder);
+
+        let parent_dir = dist
+            .as_ref()
+            .parent()
+            .ok_or_else(|| anyhow!("Failed to get parent directory"))?;
+        archive.unpack(parent_dir)?;
+    }
+
+    // Clean up temp file
+    std::fs::remove_file(temp_path)?;
     Ok(())
 }
 
@@ -151,7 +199,7 @@ pub fn decrypt_file_name(source: &Path, token: &[u8]) -> Result<String> {
 pub fn encrypt_dir_name(source: &Path, token: &[u8]) -> Result<String> {
     let source_dir_name = source
         .iter()
-        .last()
+        .next_back()
         .ok_or_else(|| anyhow!("Failed to get source dir name"))?
         .to_io_bytes_lossy();
     // encrypt dist dir name
@@ -169,7 +217,7 @@ pub fn encrypt_dir_name(source: &Path, token: &[u8]) -> Result<String> {
 pub fn decrypt_dir_name(source: &Path, token: &[u8]) -> Result<String> {
     let source_dir_name = source
         .iter()
-        .last()
+        .next_back()
         .ok_or_else(|| anyhow!("Failed to get source dir name"))?
         .to_str()
         .ok_or_else(|| anyhow!("Failed to get source dir name"))?;

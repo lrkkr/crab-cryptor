@@ -10,15 +10,24 @@ keywords = ["cli", "encrypt", "decrypt"]
 categories = ["cryptography", "command-line-utilities", "filesystem"]
 license = "MIT"
 
+[lib]
+name = "crab_cryptor"
+path = "src/lib.rs"
+
 [dependencies]
-anyhow = "1.0.66"
-base64 = "0.22"
+anyhow = "1.0.98"
+base64 = "0.22.1"
 chacha20poly1305 = { version = "0.10.1", features = ["stream"] }
-indicatif = "0.17.2"
-inquire = "0.7.4"
+flate2 = { version = "1.0", features = ["zlib"] }
+indicatif = "0.17.11"
+inquire = "0.7.5"
 os_str_bytes = "7.0.0"
-ring = "0.17.12"
+ring = "0.17.14"
+tar = "0.4"
 walkdir = "2.3.2"
+
+[dev-dependencies]
+tempfile = "3.10.1"
 
 [[bin]]
 name = "crab"
