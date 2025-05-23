@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
 
 - Add compression
 
+### Miscellaneous Tasks
+
+- Update version
+
 ## [2.0.0] - 2024-04-13
 
 ### Documentation
