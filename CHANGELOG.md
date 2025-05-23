@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Documentation
+
+- Update README
+
+## [3.0.0] - 2025-05-23
+
 ### Features
 
 - Add compression

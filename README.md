@@ -20,6 +20,13 @@ URL-safe base64 encoding without padding is used in v2.0.0.
 The previous version is not compatible with the current version.
 If you want to decrypt the file encrypted by the previous version, please use the previous version.
 
+### Upgrade to v3.0.0
+
+This project has a breaking change in version v3.0.0.
+Compression is added in v3.0.0.
+The previous version is not compatible with the current version.
+If you want to decrypt the file encrypted by the previous version, please use the previous version.
+
 ## Install
 
 ```bash
