@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Security
+
+- Use better encrypt method and keep the metadata
+
+## [3.0.1] - 2025-05-23
+
 ### Documentation
 
 - Update README

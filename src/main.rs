@@ -1,236 +1,210 @@
+use crate::crypt::{
+    decrypt_dir_name, decrypt_file, derive_key, encrypt_dir_name, encrypt_file, encrypt_file_name,
+    MAGIC_HEADER,
+};
 use anyhow::Result;
-use crypt::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::{Password, Select, Text};
-use ring::pbkdf2;
-use std::ffi::OsStr;
+use rayon::prelude::*; // Import Rayon
 use std::fs;
-use std::num::NonZeroU32;
+use std::io::Read;
 use std::path::Path;
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 mod crypt;
+mod decrypt_reader;
+mod encrypt_writer;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+// Salt for encrypt filename and dirname
+const FILENAME_SALT: &[u8] = b"CrabFileNameSalt";
+
+#[derive(PartialEq, Clone, Copy)]
+enum Mode {
+    Encrypt,
+    Decrypt,
+}
 
 fn main() -> Result<()> {
-    static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA512;
-    const PBKDF2_SALT: &[u8] = b"crab";
-    const PBKDF2_KEY_LEN: usize = 51;
-    let pbkdf2_iters: NonZeroU32 = NonZeroU32::new(100_000).unwrap();
-    // print version
+    // Print Banner
     println!("crab v{}", VERSION);
     println!("Author: xl_g <lr_kkr@outlook.com>");
-    println!("A file cryptor");
+    println!("A secure file cryptor");
     println!();
-    // inquire prompt
 
-    // get function
+    // Select Function
     let functions = vec!["encrypt", "decrypt"];
-    let function = Select::new("Choose function:", functions).prompt()?;
-
-    // get path
-    if let Ok(path) = Text::new("Work directory:").prompt() {
-        let path = OsStr::new(&path);
-        // check if path exists
-        if !Path::new(path).exists() {
-            println!("Invalid path");
-            return Ok(());
-        }
-        // get token
-        if let Ok(token) = Password::new("Encryption token:").prompt() {
-            if function == "encrypt" {
-                // extend token
-                let mut buf = vec![0u8; PBKDF2_KEY_LEN];
-                pbkdf2::derive(
-                    PBKDF2_ALG,
-                    pbkdf2_iters,
-                    PBKDF2_SALT,
-                    token.as_bytes(),
-                    &mut buf,
-                );
-                // walk dir
-                // generate progress bar
-                let walker = WalkDir::new(path).into_iter();
-                let total_num_entries = walker.count();
-                let bar = ProgressBar::new(total_num_entries.try_into()?);
-                bar.set_style(
-                    ProgressStyle::with_template(
-                        "{spinner} {msg}\n{wide_bar} {pos}/{len} in {duration} eta {eta}",
-                    )
-                    .unwrap(),
-                );
-                let entries: Vec<Result<walkdir::DirEntry, walkdir::Error>> =
-                    WalkDir::new(path).into_iter().collect();
-                for entry in entries.into_iter().rev() {
-                    let entry = entry?;
-                    let msg = entry.path().iter().next_back().unwrap();
-                    bar.set_message(format!("{:?}", msg));
-                    if entry.metadata()?.is_file() {
-                        // check if already encrypted
-                        let source = entry.path();
-                        let source_extension = source.extension();
-                        let is_crab = match source_extension {
-                            Some(source_extension) => source_extension == OsStr::new("crab"),
-                            None => false,
-                        };
-                        if is_crab {
-                            continue;
-                        }
-                        let dist_file_name = encrypt_file_name(source, &buf)?;
-                        // encrypt file
-                        let encrypt_res = encrypt_file(source, dist_file_name, &buf);
-                        match encrypt_res {
-                            Ok(_) => {
-                                // remove original file
-                                fs::remove_file(source)?;
-                            }
-                            Err(e) => {
-                                println!("Failed to encrypt file {:?} with Error: {:?}", source, e);
-                            }
-                        }
-                    } else if entry.metadata()?.is_dir() {
-                        // check if already encrypted
-                        let source = entry.path();
-                        if source == path {
-                            continue;
-                        }
-                        let source_string = source.to_str();
-                        let is_crab = match source_string {
-                            Some(source_string) => source_string.ends_with("[crab]"),
-                            None => false,
-                        };
-                        if is_crab {
-                            continue;
-                        }
-                        let encrypted_dir_name = encrypt_dir_name(source, &buf)?;
-                        // remove original file
-                        fs::rename(source, encrypted_dir_name)?;
-                    }
-                    bar.inc(1);
-                }
-                bar.finish_with_message("Done");
-            }
-            if function == "decrypt" {
-                // extend token
-                let mut buf = vec![0u8; PBKDF2_KEY_LEN];
-                pbkdf2::derive(
-                    PBKDF2_ALG,
-                    pbkdf2_iters,
-                    PBKDF2_SALT,
-                    token.as_bytes(),
-                    &mut buf,
-                );
-                // walk dir
-                // generate progress bar
-                let walker = WalkDir::new(path).into_iter();
-                let total_num_entries = walker.count();
-                let bar = ProgressBar::new(total_num_entries.try_into()?);
-                bar.set_style(
-                    ProgressStyle::with_template(
-                        "{spinner} {msg}\n{wide_bar} {pos}/{len} in {duration} eta {eta}",
-                    )
-                    .unwrap(),
-                );
-                let entries: Vec<Result<walkdir::DirEntry, walkdir::Error>> =
-                    WalkDir::new(path).into_iter().collect();
-                for entry in entries.into_iter().rev() {
-                    let entry = entry?;
-                    let msg = entry.path().iter().next_back().unwrap();
-                    bar.set_message(format!("{:?}", msg));
-                    if entry.metadata()?.is_file() {
-                        // check if already encrypted
-                        let source = entry.path();
-                        let source_extension = source.extension();
-                        let is_crab = match source_extension {
-                            Some(source_extension) => source_extension == OsStr::new("crab"),
-                            None => false,
-                        };
-                        if !is_crab {
-                            continue;
-                        }
-                        let dist_file_name = decrypt_file_name(source, &buf)?;
-                        // decrypt file
-                        decrypt_file(source, dist_file_name, &buf)?;
-                        // remove original file
-                        fs::remove_file(source)?;
-                    } else if entry.metadata()?.is_dir() {
-                        // check if already encrypted
-                        let source = entry.path();
-                        if source == path {
-                            continue;
-                        }
-                        let source_string = source.to_str();
-                        let is_crab = match source_string {
-                            Some(source_string) => source_string.ends_with("[crab]"),
-                            None => false,
-                        };
-                        if !is_crab {
-                            continue;
-                        }
-                        let decrypted_dir_name = decrypt_dir_name(source, &buf)?;
-                        // remove original file
-                        fs::rename(source, decrypted_dir_name)?;
-                    }
-                    bar.inc(1);
-                }
-                bar.finish_with_message("Done");
-            }
-        } else {
-            println!("Invalid token");
-        }
+    let mode_str = Select::new("Choose function:", functions).prompt()?;
+    let mode = if mode_str == "encrypt" {
+        Mode::Encrypt
     } else {
-        println!("Invalid path");
+        Mode::Decrypt
+    };
+
+    // Get Path
+    let path_input = Text::new("Work directory:").prompt()?;
+    let work_path = Path::new(&path_input);
+
+    if !work_path.exists() {
+        println!("Invalid path: path does not exist");
+        return Ok(());
     }
+
+    // Get Password & Derive Filename Key
+    let password = Password::new("Encryption password:").prompt()?;
+
+    // Derive Key for encrypt filename
+    let filename_key = derive_key(&password, FILENAME_SALT)?;
+
+    // Collect Entries
+    println!("Scanning files...");
+    let walker = WalkDir::new(work_path).into_iter();
+    let entries: Vec<DirEntry> = walker.filter_map(|e| e.ok()).collect();
+
+    // Setup Progress Bar
+    let total_num_entries = entries.len();
+    let bar = ProgressBar::new(total_num_entries.try_into()?);
+    bar.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta}) \n{msg}",
+        )
+        .unwrap()
+        .progress_chars("#>-"),
+    );
+
+    // Split files and directories
+    // Files can be processed in parallel. Dirs must be sequential to avoid path errors.
+    let (files, dirs): (Vec<_>, Vec<_>) =
+        entries.into_iter().partition(|e| e.file_type().is_file());
+
+    // 1. Process Files in Parallel (Heavy CPU task)
+    files.par_iter().for_each(|entry| {
+        let path = entry.path();
+
+        // Update progress bar (thread-safe)
+        if let Some(name) = path.file_name() {
+            bar.set_message(format!("Processing: {}", name.to_string_lossy()));
+        }
+
+        if let Err(e) = process_entry(path, mode, &password, &filename_key, work_path) {
+            bar.println(format!("Error processing {:?}: {}", path, e));
+        }
+        bar.inc(1);
+    });
+
+    // 2. Process Directories Sequentially (Metadata task)
+    // Must be reversed (.rev()) to process children before parents
+    for entry in dirs.into_iter().rev() {
+        let path = entry.path();
+
+        if let Some(name) = path.file_name() {
+            bar.set_message(format!("Renaming: {}", name.to_string_lossy()));
+        }
+
+        if let Err(e) = process_entry(path, mode, &password, &filename_key, work_path) {
+            bar.println(format!("Error processing dir {:?}: {}", path, e));
+        }
+        bar.inc(1);
+    }
+
+    bar.finish_with_message("All Done!");
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::crypt::{decrypt, encrypt};
-    use ring::pbkdf2;
-    use std::{ffi::OsStr, num::NonZeroU32};
-
-    #[test]
-    fn crypt_test() {
-        static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA512;
-        const PBKDF2_SALT: &[u8] = b"crab";
-        const PBKDF2_KEY_LEN: usize = 51;
-        let pbkdf2_iters: NonZeroU32 = NonZeroU32::new(100_000).unwrap();
-        let token = String::from("crab");
-        let mut buf = vec![0u8; PBKDF2_KEY_LEN];
-        pbkdf2::derive(
-            PBKDF2_ALG,
-            pbkdf2_iters,
-            PBKDF2_SALT,
-            token.as_bytes(),
-            &mut buf,
-        );
-        let cipher_text = encrypt("plain_text".as_bytes(), &buf).unwrap();
-        assert_eq!(
-            cipher_text,
-            "MF8gUHeKK45ZVNknudk2YLjFl5j3F82xHDI".to_owned()
-        );
-        let plain_text = decrypt("MF8gUHeKK45ZVNknudk2YLjFl5j3F82xHDI".to_owned(), &buf).unwrap();
-        assert_eq!(plain_text, OsStr::new("plain_text"));
+/// Core process approach
+fn process_entry(
+    path: &Path,
+    mode: Mode,
+    password: &str,
+    filename_key: &[u8; 32],
+    root_path: &Path,
+) -> Result<()> {
+    // Skip root path
+    if path == root_path {
+        return Ok(());
     }
 
-    #[test]
-    fn decrypt_test() {
-        static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA512;
-        const PBKDF2_SALT: &[u8] = b"crab";
-        const PBKDF2_KEY_LEN: usize = 51;
-        let pbkdf2_iters: NonZeroU32 = NonZeroU32::new(100_000).unwrap();
-        let token = String::from("crab");
-        let mut buf = vec![0u8; PBKDF2_KEY_LEN];
-        pbkdf2::derive(
-            PBKDF2_ALG,
-            pbkdf2_iters,
-            PBKDF2_SALT,
-            token.as_bytes(),
-            &mut buf,
-        );
-        let plain_text = decrypt("MF8gUHeKK45ZVNknudk2YLjFl5j3F82xHDI".to_owned(), &buf).unwrap();
-        assert_eq!(plain_text, OsStr::new("plain_text"));
+    // Check metadata
+    // Note: In parallel execution, files might be deleted, so we check existence
+    let metadata = match path.metadata() {
+        Ok(m) => m,
+        Err(_) => return Ok(()), // File might be gone or inaccessible
+    };
+
+    if metadata.is_file() {
+        // Process file
+        let is_encrypted = is_file_encrypted(path);
+
+        match mode {
+            Mode::Encrypt => {
+                // Skip already encrypted
+                if is_encrypted {
+                    return Ok(());
+                }
+
+                // Generate encrypt filename
+                let dist_name_str = encrypt_file_name(path, filename_key)?;
+                let dist_path = Path::new(&dist_name_str);
+
+                // Encrypt file content
+                encrypt_file(path, dist_path, password)?;
+
+                // Delete original file
+                fs::remove_file(path)?;
+            }
+            Mode::Decrypt => {
+                // Skip non-encrypted
+                if !is_encrypted {
+                    return Ok(());
+                }
+
+                // Decrypt logic: extract to parent dir
+                // Tar archive restores original filename
+                let output_dir = path.parent().unwrap_or(Path::new("."));
+
+                // Decrypt content
+                decrypt_file(path, output_dir, password)?;
+
+                // Delete encrypted file
+                fs::remove_file(path)?;
+            }
+        }
+    } else if metadata.is_dir() {
+        // Process dir (Rename only)
+        let path_str = path.to_string_lossy();
+        let is_crab_dir = path_str.ends_with("[crab]");
+
+        match mode {
+            Mode::Encrypt => {
+                if is_crab_dir {
+                    return Ok(());
+                }
+                let encrypted_dir_name = encrypt_dir_name(path, filename_key)?;
+                fs::rename(path, encrypted_dir_name)?;
+            }
+            Mode::Decrypt => {
+                if !is_crab_dir {
+                    return Ok(());
+                }
+                let decrypted_dir_name = decrypt_dir_name(path, filename_key)?;
+                fs::rename(path, decrypted_dir_name)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if already encrypted by reading header
+fn is_file_encrypted(path: &Path) -> bool {
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    let mut buffer = vec![0u8; MAGIC_HEADER.len()];
+    match file.read_exact(&mut buffer) {
+        Ok(_) => buffer == MAGIC_HEADER,
+        Err(_) => false,
     }
 }

@@ -4,29 +4,6 @@
 
 A simple file cryptor written in Rust.
 
-## Notice
-
-### Upgrade to v1.0.0
-
-This project has a breaking change in version v1.0.0.
-A key derivation function is used in v1.0.0.
-The previous version is not compatible with the current version.
-If you want to decrypt the file encrypted by the previous version, please use the previous version.
-
-### Upgrade to v2.0.0
-
-This project has a breaking change in version v2.0.0.
-URL-safe base64 encoding without padding is used in v2.0.0.
-The previous version is not compatible with the current version.
-If you want to decrypt the file encrypted by the previous version, please use the previous version.
-
-### Upgrade to v3.0.0
-
-This project has a breaking change in version v3.0.0.
-Compression is added in v3.0.0.
-The previous version is not compatible with the current version.
-If you want to decrypt the file encrypted by the previous version, please use the previous version.
-
 ## Install
 
 ```bash
@@ -42,13 +19,13 @@ crab
 ```
 
 ```bash
-crab v2.0.0
+crab v4.0.1
 Author: xl_g <lr_kkr@outlook.com>
-A file cryptor
+A secure file cryptor
 
 > Choose function: encrypt
 > Work directory: data
-> Encryption token:
+> Encryption password:
 ```
 
 ### Decrypt
@@ -58,13 +35,13 @@ crab
 ```
 
 ```bash
-crab v2.0.0
+crab v4.0.1
 Author: xl_g <lr_kkr@outlook.com>
-A file cryptor
+A secure file cryptor
 
 > Choose function: decrypt
 > Work directory: data
-> Encryption token:
+> Encryption password:
 ```
 
 ## License
