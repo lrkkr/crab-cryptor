@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Deps
+
+- Dump deps to compatible latest version
+
 ### Security
 
 - Use better encrypt method and keep the metadata
