@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Security
+
+- Avoid path traversal
+
+## [4.0.2] - 2026-02-26
+
 ### Deps
 
 - Dump deps to compatible latest version

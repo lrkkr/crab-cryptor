@@ -15,28 +15,29 @@ use flate2::{write::GzEncoder, Compression};
 use os_str_bytes::OsStrBytes;
 use rand::{rng, RngCore};
 use std::ffi::{OsStr, OsString};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::{
     fs::File,
     io::{Read, Write},
 };
 use tar::{Archive, Builder};
+use zeroize::Zeroizing;
 
 pub const MAGIC_HEADER: &[u8] = b"CRABv4";
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 19;
 const NAME_NONCE_LEN: usize = 24;
 
-pub fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
+pub fn derive_key(password: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
     // 64MB RAM, 3 iterations, 4 parallelism
     let params = Params::new(64 * 1024, 3, 4, Some(32))
         .map_err(|e| anyhow!("Argon2 params error: {}", e))?;
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
-    let mut key = [0u8; 32];
+    let mut key = Zeroizing::new([0u8; 32]);
     argon2
-        .hash_password_into(password.as_bytes(), salt, &mut key)
+        .hash_password_into(password.as_bytes(), salt, &mut *key)
         .map_err(|e| anyhow!("Derivation failed: {}", e))?;
 
     Ok(key)
@@ -118,7 +119,7 @@ pub fn encrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
 
     // derive key
     let key_bytes = derive_key(password, &salt)?;
-    let key = Key::from_slice(&key_bytes);
+    let key = Key::from_slice(&*key_bytes);
 
     let aead = XChaCha20Poly1305::new(key);
     let nonce_generic = chacha20poly1305::aead::generic_array::GenericArray::from_slice(&nonce);
@@ -167,7 +168,7 @@ pub fn decrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
     source_file.read_exact(&mut nonce)?;
 
     let key_bytes = derive_key(password, &salt)?;
-    let key = Key::from_slice(&key_bytes);
+    let key = Key::from_slice(&*key_bytes);
 
     let aead = XChaCha20Poly1305::new(key);
     let nonce_generic = chacha20poly1305::aead::generic_array::GenericArray::from_slice(&nonce);
@@ -179,12 +180,20 @@ pub fn decrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
 
     let mut archive = Archive::new(gz_decoder);
 
-    archive.unpack(dist_dir)?;
+    // Validate each entry path to prevent path traversal attacks (Zip Slip)
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let entry_path = entry.path()?;
+        if entry_path.components().any(|c| c == Component::ParentDir) || entry_path.is_absolute() {
+            return Err(anyhow!("Suspicious path in archive: {:?}", entry_path));
+        }
+        entry.unpack_in(dist_dir.as_ref())?;
+    }
 
     Ok(())
 }
 
-pub fn encrypt_file_name(source: &Path, key: &[u8; 32]) -> Result<String> {
+pub fn encrypt_file_name(source: &Path, key: &[u8; 32]) -> Result<PathBuf> {
     let source_file_name = source
         .file_name()
         .ok_or_else(|| anyhow!("Failed to get source file name"))?
@@ -196,13 +205,12 @@ pub fn encrypt_file_name(source: &Path, key: &[u8; 32]) -> Result<String> {
         .parent()
         .ok_or_else(|| anyhow!("Failed to get dir name"))?;
 
-    Ok(format!(
-        "{}.crab",
-        dir_name.join(encrypted_file_name).display()
-    ))
+    let mut name = OsString::from(encrypted_file_name);
+    name.push(".crab");
+    Ok(dir_name.join(name))
 }
 
-pub fn encrypt_dir_name(source: &Path, key: &[u8; 32]) -> Result<String> {
+pub fn encrypt_dir_name(source: &Path, key: &[u8; 32]) -> Result<PathBuf> {
     let source_dir_name = source
         .iter()
         .next_back()
@@ -215,13 +223,12 @@ pub fn encrypt_dir_name(source: &Path, key: &[u8; 32]) -> Result<String> {
         .parent()
         .ok_or_else(|| anyhow!("Failed to get dir name"))?;
 
-    Ok(format!(
-        "{}[crab]",
-        dir_name.join(encrypted_dir_name).display()
-    ))
+    let mut name = OsString::from(encrypted_dir_name);
+    name.push("[crab]");
+    Ok(dir_name.join(name))
 }
 
-pub fn decrypt_dir_name(source: &Path, key: &[u8; 32]) -> Result<String> {
+pub fn decrypt_dir_name(source: &Path, key: &[u8; 32]) -> Result<PathBuf> {
     let source_dir_str = source
         .iter()
         .next_back()
@@ -236,14 +243,10 @@ pub fn decrypt_dir_name(source: &Path, key: &[u8; 32]) -> Result<String> {
     let encrypted_part = &source_dir_str[..source_dir_str.len() - 6];
 
     let decrypted_os_str = decrypt_name_core(encrypted_part, key)?;
-    let decrypted_dir_name = decrypted_os_str.to_string_lossy();
 
     let dir_name = source
         .parent()
         .ok_or_else(|| anyhow!("Failed to get dir name"))?;
 
-    Ok(format!(
-        "{}",
-        dir_name.join(decrypted_dir_name.as_ref()).display()
-    ))
+    Ok(dir_name.join(decrypted_os_str))
 }

@@ -47,6 +47,9 @@ impl<W: Write> Write for EncryptWriter<W> {
         Ok(buf.len())
     }
 
+    /// Note: `flush()` only flushes the underlying writer. Buffered plaintext
+    /// cannot be partially encrypted due to AEAD chunk size requirements.
+    /// Call `finish()` to finalize encryption and flush all remaining data.
     fn flush(&mut self) -> io::Result<()> {
         self.inner_writer.flush()
     }

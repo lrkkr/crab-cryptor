@@ -13,8 +13,8 @@ const TEST_FILENAME_SALT: &[u8] = b"crabTestSalt";
 fn test_text_encryption() -> Result<()> {
     let filename_key = derive_key(TEST_PASSWORD, TEST_FILENAME_SALT)?;
     let plain_text = b"Hello, world!";
-    let encrypted = encrypt_name_core(plain_text, &filename_key)?;
-    let decrypted = decrypt_name_core(&encrypted, &filename_key)?;
+    let encrypted = encrypt_name_core(plain_text, &*filename_key)?;
+    let decrypted = decrypt_name_core(&encrypted, &*filename_key)?;
 
     assert_eq!(decrypted.to_io_bytes(), Some(&plain_text[..]));
     Ok(())

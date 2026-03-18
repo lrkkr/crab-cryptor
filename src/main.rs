@@ -4,12 +4,14 @@ use crate::crypt::{
 };
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
-use inquire::{Password, Select, Text};
-use rayon::prelude::*; // Import Rayon
+use inquire::{Confirm, Password, Select, Text};
+use rayon::prelude::*;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use walkdir::{DirEntry, WalkDir};
+use zeroize::Zeroize;
 
 mod crypt;
 mod decrypt_reader;
@@ -51,7 +53,12 @@ fn main() -> Result<()> {
     }
 
     // Get Password & Derive Filename Key
-    let password = Password::new("Encryption password:").prompt()?;
+    let prompt = if mode == Mode::Encrypt {
+        "Encryption password:"
+    } else {
+        "Decryption password:"
+    };
+    let mut password = Password::new(prompt).prompt()?;
 
     // Derive Key for encrypt filename
     let filename_key = derive_key(&password, FILENAME_SALT)?;
@@ -61,8 +68,35 @@ fn main() -> Result<()> {
     let walker = WalkDir::new(work_path).into_iter();
     let entries: Vec<DirEntry> = walker.filter_map(|e| e.ok()).collect();
 
+    // Split files and directories
+    // Files can be processed in parallel. Dirs must be sequential to avoid path errors.
+    let (files, dirs): (Vec<_>, Vec<_>) =
+        entries.into_iter().partition(|e| e.file_type().is_file());
+
+    // Confirm operation before proceeding
+    let action = if mode == Mode::Encrypt {
+        "encrypt"
+    } else {
+        "decrypt"
+    };
+    let confirmed = Confirm::new(&format!(
+        "Will {} {} files and {} directories in {:?}. Continue?",
+        action,
+        files.len(),
+        dirs.len(),
+        work_path
+    ))
+    .with_default(false)
+    .prompt()?;
+
+    if !confirmed {
+        password.zeroize();
+        println!("Operation cancelled.");
+        return Ok(());
+    }
+
     // Setup Progress Bar
-    let total_num_entries = entries.len();
+    let total_num_entries = files.len() + dirs.len();
     let bar = ProgressBar::new(total_num_entries.try_into()?);
     bar.set_style(
         ProgressStyle::with_template(
@@ -72,12 +106,9 @@ fn main() -> Result<()> {
         .progress_chars("#>-"),
     );
 
-    // Split files and directories
-    // Files can be processed in parallel. Dirs must be sequential to avoid path errors.
-    let (files, dirs): (Vec<_>, Vec<_>) =
-        entries.into_iter().partition(|e| e.file_type().is_file());
+    let error_count = AtomicUsize::new(0);
 
-    // 1. Process Files in Parallel (Heavy CPU task)
+    // Process Files in Parallel (Heavy CPU task)
     files.par_iter().for_each(|entry| {
         let path = entry.path();
 
@@ -88,11 +119,12 @@ fn main() -> Result<()> {
 
         if let Err(e) = process_entry(path, mode, &password, &filename_key, work_path) {
             bar.println(format!("Error processing {:?}: {}", path, e));
+            error_count.fetch_add(1, Ordering::Relaxed);
         }
         bar.inc(1);
     });
 
-    // 2. Process Directories Sequentially (Metadata task)
+    // Process Directories Sequentially (Metadata task)
     // Must be reversed (.rev()) to process children before parents
     for entry in dirs.into_iter().rev() {
         let path = entry.path();
@@ -103,11 +135,24 @@ fn main() -> Result<()> {
 
         if let Err(e) = process_entry(path, mode, &password, &filename_key, work_path) {
             bar.println(format!("Error processing dir {:?}: {}", path, e));
+            error_count.fetch_add(1, Ordering::Relaxed);
         }
         bar.inc(1);
     }
 
-    bar.finish_with_message("All Done!");
+    let errors = error_count.load(Ordering::Relaxed);
+    if errors > 0 {
+        bar.finish_with_message(format!("Done with {} error(s).", errors));
+    } else {
+        bar.finish_with_message("All Done!");
+    }
+
+    password.zeroize();
+
+    if errors > 0 {
+        anyhow::bail!("{} file(s) failed to process", errors);
+    }
+
     Ok(())
 }
 
@@ -124,12 +169,16 @@ fn process_entry(
         return Ok(());
     }
 
-    // Check metadata
-    // Note: In parallel execution, files might be deleted, so we check existence
-    let metadata = match path.metadata() {
+    // Use symlink_metadata to avoid following symlinks
+    let metadata = match path.symlink_metadata() {
         Ok(m) => m,
         Err(_) => return Ok(()), // File might be gone or inaccessible
     };
+
+    // Skip symlinks
+    if metadata.is_symlink() {
+        return Ok(());
+    }
 
     if metadata.is_file() {
         // Process file
@@ -143,11 +192,12 @@ fn process_entry(
                 }
 
                 // Generate encrypt filename
-                let dist_name_str = encrypt_file_name(path, filename_key)?;
-                let dist_path = Path::new(&dist_name_str);
+                let dist_path = encrypt_file_name(path, filename_key)?;
+                let tmp_path = dist_path.with_extension("crab.tmp");
 
-                // Encrypt file content
-                encrypt_file(path, dist_path, password)?;
+                // Encrypt to temp file first, then rename for atomicity
+                encrypt_file(path, &tmp_path, password)?;
+                fs::rename(&tmp_path, &dist_path)?;
 
                 // Delete original file
                 fs::remove_file(path)?;
@@ -180,14 +230,14 @@ fn process_entry(
                     return Ok(());
                 }
                 let encrypted_dir_name = encrypt_dir_name(path, filename_key)?;
-                fs::rename(path, encrypted_dir_name)?;
+                fs::rename(path, &encrypted_dir_name)?;
             }
             Mode::Decrypt => {
                 if !is_crab_dir {
                     return Ok(());
                 }
                 let decrypted_dir_name = decrypt_dir_name(path, filename_key)?;
-                fs::rename(path, decrypted_dir_name)?;
+                fs::rename(path, &decrypted_dir_name)?;
             }
         }
     }
