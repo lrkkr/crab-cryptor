@@ -30,10 +30,13 @@ del_branch BRANCH:
   git branch -d {{ BRANCH }}
 
 check:
-  pre-commit run --all-files
+  prek run --all-files
 
 install:
   cargo install --path .
 
 test:
   cargo test -- --nocapture
+
+machete:
+  cargo machete

@@ -1,5 +1,5 @@
-use chacha20poly1305::aead::stream::EncryptorBE32;
 use chacha20poly1305::XChaCha20Poly1305;
+use chacha20poly1305::aead::stream::EncryptorBE32;
 use std::io::{self, Write};
 
 const BUFFER_LEN: usize = 64 * 1024; // 64 KB
@@ -19,6 +19,19 @@ impl<W: Write> EncryptWriter<W> {
         }
     }
 
+    fn write_encrypted_chunk(&mut self, plaintext: &[u8]) -> io::Result<()> {
+        let ciphertext = self
+            .encryptor
+            .encrypt_next(plaintext)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+        self.inner_writer.write_all(&ciphertext)
+    }
+
+    /// Finalizes the stream and flushes the trailing ciphertext chunk.
+    ///
+    /// # Errors
+    /// Returns an error if final chunk encryption or the final write/flush fails.
     pub fn finish(mut self) -> io::Result<W> {
         // last chunk
         let ciphertext = self
@@ -34,16 +47,35 @@ impl<W: Write> EncryptWriter<W> {
 
 impl<W: Write> Write for EncryptWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.buffer.extend_from_slice(buf);
-        while self.buffer.len() >= BUFFER_LEN {
-            let chunk: Vec<u8> = self.buffer.drain(0..BUFFER_LEN).collect();
-            // next chunk
-            let ciphertext = self
-                .encryptor
-                .encrypt_next(&chunk[..])
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-            self.inner_writer.write_all(&ciphertext)?;
+        let mut remaining = buf;
+
+        if !self.buffer.is_empty() {
+            let to_fill = (BUFFER_LEN - self.buffer.len()).min(remaining.len());
+            let (prefix, suffix) = remaining
+                .split_at_checked(to_fill)
+                .ok_or_else(|| io::Error::other("Plaintext buffer cursor out of bounds"))?;
+            self.buffer.extend_from_slice(prefix);
+            remaining = suffix;
+
+            if self.buffer.len() == BUFFER_LEN {
+                let chunk = std::mem::take(&mut self.buffer);
+                self.write_encrypted_chunk(&chunk)?;
+                self.buffer = Vec::with_capacity(BUFFER_LEN);
+            }
         }
+
+        while remaining.len() >= BUFFER_LEN {
+            let (chunk, suffix) = remaining
+                .split_at_checked(BUFFER_LEN)
+                .ok_or_else(|| io::Error::other("Chunk split cursor out of bounds"))?;
+            self.write_encrypted_chunk(chunk)?;
+            remaining = suffix;
+        }
+
+        if !remaining.is_empty() {
+            self.buffer.extend_from_slice(remaining);
+        }
+
         Ok(buf.len())
     }
 

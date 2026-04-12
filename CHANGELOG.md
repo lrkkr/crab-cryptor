@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Bug Fixes
+
+- Enhance security and add context-drived keys
+
+## [4.1.0] - 2026-03-18
+
 ### Security
 
 - Avoid path traversal
