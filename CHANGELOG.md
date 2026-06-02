@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Deps
+
+- Dump deps to latest version
+
+## [4.1.1] - 2026-04-12
+
 ### Bug Fixes
 
 - Enhance security and add context-drived keys
