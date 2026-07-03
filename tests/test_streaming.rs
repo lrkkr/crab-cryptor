@@ -1,8 +1,6 @@
+use aead_stream::{DecryptorBE32, Nonce, StreamBE32};
 use anyhow::Result;
-use chacha20poly1305::{
-    Key, XChaCha20Poly1305,
-    aead::{KeyInit, stream},
-};
+use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305};
 use crab_cryptor::decrypt_reader::DecryptReader;
 use std::io::{self, Read};
 
@@ -16,10 +14,10 @@ impl Read for BrokenReader {
 
 #[test]
 fn test_decrypt_reader_new_propagates_initial_read_error() -> Result<()> {
-    let key = Key::from_slice(&[0x33; 32]);
-    let aead = XChaCha20Poly1305::new(key);
-    let nonce = chacha20poly1305::aead::generic_array::GenericArray::from_slice(&[0x44; 19]);
-    let decryptor = stream::DecryptorBE32::from_aead(aead, nonce);
+    let key = Key::from([0x33; 32]);
+    let aead = XChaCha20Poly1305::new(&key);
+    let nonce = Nonce::<XChaCha20Poly1305, StreamBE32<XChaCha20Poly1305>>::from([0x44; 19]);
+    let decryptor = DecryptorBE32::from_aead(aead, &nonce);
 
     let Err(error) = DecryptReader::new(BrokenReader, decryptor) else {
         anyhow::bail!("DecryptReader::new should return the underlying read error");

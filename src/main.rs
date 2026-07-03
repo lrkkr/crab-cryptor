@@ -1,23 +1,19 @@
-use crate::crypt::{
-    MAGIC_HEADER, MIN_ENCRYPTED_FILE_LEN, NAME_MASTER_SALT, decrypt_dir_name, decrypt_file,
-    derive_key, encrypt_dir_name, encrypt_file, encrypt_file_name,
-};
 use anyhow::{Context, Result, anyhow};
+use crab_cryptor::crypt::{
+    MAGIC_HEADER, MIN_ENCRYPTED_FILE_LEN, NAME_MASTER_SALT, decrypt_dir_name_with_contexts,
+    decrypt_file, derive_key, encrypt_dir_name, encrypt_file, encrypt_file_name,
+};
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::{Confirm, Password, Select, Text};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashMap};
-use std::ffi::{OsStr, OsString};
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use walkdir::WalkDir;
 use zeroize::Zeroizing;
-
-mod crypt;
-mod decrypt_reader;
-mod encrypt_writer;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -86,7 +82,12 @@ fn main() -> Result<()> {
     } else {
         "Decryption password:"
     };
-    let password = Zeroizing::new(Password::new(prompt).prompt()?);
+    let password_prompt = Password::new(prompt);
+    let password = if mode == Mode::Decrypt {
+        Zeroizing::new(password_prompt.without_confirmation().prompt()?)
+    } else {
+        Zeroizing::new(password_prompt.prompt()?)
+    };
 
     println!("Scanning files...");
     let snapshot = collect_snapshot(work_path);
@@ -192,51 +193,26 @@ fn build_encrypt_operation_plan(
     snapshot: &ScanSnapshot,
     name_master_key: &[u8; 32],
 ) -> Result<OperationPlan> {
-    let mut dir_inputs = snapshot.dirs.clone();
-    dir_inputs.sort_by_key(|path| path_depth(path));
-
-    let mut encrypted_relative_dirs = HashMap::<PathBuf, PathBuf>::new();
     let mut dir_plans = Vec::new();
 
-    for source_path in dir_inputs {
-        let relative_path = relative_to_root(&source_path, root_path)?;
-        let parent_relative = relative_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
-        let encrypted_parent_relative = encrypted_relative_dirs
-            .get(&parent_relative)
-            .cloned()
-            .unwrap_or(parent_relative.clone());
+    for source_path in &snapshot.dirs {
+        let relative_path = relative_to_root(source_path, root_path)?;
 
-        if is_crab_dir(&source_path) {
-            encrypted_relative_dirs.insert(relative_path.clone(), relative_path);
+        if is_crab_dir(source_path) {
             continue;
         }
 
-        let target_path =
-            encrypt_dir_name(&source_path, name_master_key, &encrypted_parent_relative)
-                .with_context(|| {
-                    let source_path = source_path.display();
-                    format!("Failed to plan encrypted directory name for {source_path}")
-                })?;
-
-        let encrypted_name = target_path
-            .file_name()
-            .map(OsStr::to_os_string)
-            .ok_or_else(|| {
+        let target_path = encrypt_dir_name(source_path, name_master_key, Path::new(""))
+            .with_context(|| {
                 let source_path = source_path.display();
-                anyhow!("Failed to get encrypted directory name for {source_path}")
+                format!("Failed to plan encrypted directory name for {source_path}")
             })?;
-        let encrypted_relative =
-            append_relative_component(&encrypted_parent_relative, &encrypted_name);
 
         dir_plans.push(DirRenamePlan {
             depth: path_depth(&relative_path),
-            source_path,
+            source_path: source_path.clone(),
             target_path,
         });
-        encrypted_relative_dirs.insert(relative_path, encrypted_relative);
     }
 
     let mut file_plans = Vec::new();
@@ -245,17 +221,11 @@ fn build_encrypt_operation_plan(
             continue;
         }
 
-        let parent_relative = relative_parent_to_root(source_path, root_path)?;
-        let encrypted_parent_relative = encrypted_relative_dirs
-            .get(&parent_relative)
-            .cloned()
-            .unwrap_or(parent_relative.clone());
-        let target_path =
-            encrypt_file_name(source_path, name_master_key, &encrypted_parent_relative)
-                .with_context(|| {
-                    let source_path = source_path.display();
-                    format!("Failed to plan encrypted file name for {source_path}")
-                })?;
+        let target_path = encrypt_file_name(source_path, name_master_key, Path::new(""))
+            .with_context(|| {
+                let source_path = source_path.display();
+                format!("Failed to plan encrypted file name for {source_path}")
+            })?;
 
         file_plans.push(FilePlan {
             source_path: source_path.clone(),
@@ -298,22 +268,26 @@ fn build_decrypt_operation_plan(
         });
     }
 
+    let mut dir_inputs = snapshot.dirs.clone();
+    if is_crab_dir(root_path) {
+        dir_inputs.push(root_path.to_path_buf());
+    }
+    dir_inputs.sort_by_key(|path| path_depth(path));
+
     let mut dir_plans = Vec::new();
-    for source_path in &snapshot.dirs {
+    for source_path in &dir_inputs {
         if !is_crab_dir(source_path) {
             continue;
         }
 
         let relative_path = relative_to_root(source_path, root_path)?;
-        let parent_relative = relative_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
-        let target_path = decrypt_dir_name(source_path, name_master_key, &parent_relative)
-            .with_context(|| {
-                let source_path = source_path.display();
-                format!("Failed to plan decrypted directory name for {source_path}")
-            })?;
+        let parent_contexts = decrypt_parent_context_candidates(source_path, root_path)?;
+        let target_path =
+            decrypt_dir_name_with_contexts(source_path, name_master_key, &parent_contexts)
+                .with_context(|| {
+                    let source_path = source_path.display();
+                    format!("Failed to plan decrypted directory name for {source_path}")
+                })?;
 
         dir_plans.push(DirRenamePlan {
             depth: path_depth(&relative_path),
@@ -514,17 +488,40 @@ fn relative_to_root(path: &Path, root_path: &Path) -> Result<PathBuf> {
         })
 }
 
-fn relative_parent_to_root(path: &Path, root_path: &Path) -> Result<PathBuf> {
-    let parent = path.parent().unwrap_or(root_path);
-    relative_to_root(parent, root_path)
-}
-
-fn append_relative_component(base: &Path, component: &OsString) -> PathBuf {
-    if base.as_os_str().is_empty() {
-        PathBuf::from(component)
-    } else {
-        base.join(component)
+fn decrypt_parent_context_candidates(source_path: &Path, root_path: &Path) -> Result<Vec<PathBuf>> {
+    if source_path == root_path {
+        return Ok(vec![PathBuf::new()]);
     }
+
+    let relative_path = relative_to_root(source_path, root_path)?;
+    let parent_relative = relative_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+
+    let full_context = if is_crab_dir(root_path) {
+        let root_name = root_path
+            .file_name()
+            .ok_or_else(|| anyhow!("Failed to get encrypted root directory name"))?;
+        PathBuf::from(root_name).join(parent_relative)
+    } else {
+        parent_relative
+    };
+
+    let components = full_context
+        .iter()
+        .map(OsStr::to_os_string)
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::with_capacity(components.len() + 1);
+
+    for start in 0..=components.len() {
+        let candidate = components.iter().skip(start).collect::<PathBuf>();
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+
+    Ok(candidates)
 }
 
 fn path_depth(path: &Path) -> usize {
@@ -650,6 +647,50 @@ mod tests {
                 .map(|plan| &plan.source_path),
             Some(&parent_dir)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_encrypted_directory_can_be_decrypted_as_work_root() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let root_path = temp_dir.path();
+        let outer_dir = root_path.join("outer");
+        let inner_dir = outer_dir.join("inner");
+        fs::create_dir_all(&inner_dir)?;
+
+        let name_master_key = derive_key(TEST_PASSWORD, NAME_MASTER_SALT)?;
+        let encrypt_snapshot = collect_snapshot(root_path);
+        let encrypt_plan =
+            build_encrypt_operation_plan(root_path, &encrypt_snapshot, &name_master_key)?;
+        let encrypted_outer = encrypt_plan
+            .dir_plans
+            .iter()
+            .find(|plan| plan.source_path == outer_dir)
+            .map(|plan| plan.target_path.clone())
+            .ok_or_else(|| anyhow!("missing outer directory encryption plan"))?;
+
+        assert_eq!(
+            execute_dir_rename_plans(&encrypt_plan.dir_plans, &ProgressBar::hidden()),
+            0
+        );
+        assert!(encrypted_outer.exists());
+
+        let decrypt_snapshot = collect_snapshot(&encrypted_outer);
+        let decrypt_plan =
+            build_decrypt_operation_plan(&encrypted_outer, &decrypt_snapshot, &name_master_key)?;
+
+        assert_eq!(decrypt_plan.dir_plans.len(), 2);
+        assert!(
+            decrypt_plan
+                .dir_plans
+                .iter()
+                .any(|plan| plan.source_path == encrypted_outer && plan.depth == 0)
+        );
+        assert_eq!(
+            execute_dir_rename_plans(&decrypt_plan.dir_plans, &ProgressBar::hidden()),
+            0
+        );
+        assert!(inner_dir.exists());
         Ok(())
     }
 

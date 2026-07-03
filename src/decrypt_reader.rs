@@ -1,5 +1,5 @@
+use aead_stream::DecryptorBE32;
 use chacha20poly1305::XChaCha20Poly1305;
-use chacha20poly1305::aead::stream::DecryptorBE32;
 use std::io::{self, Read};
 
 const CHUNK_SIZE: usize = 64 * 1024 + 16; // 64KB Data + 16B Tag

@@ -1,8 +1,6 @@
+use aead_stream::{EncryptorBE32, Nonce, StreamBE32};
 use anyhow::Result;
-use chacha20poly1305::{
-    Key, XChaCha20Poly1305,
-    aead::{KeyInit, stream},
-};
+use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305};
 use crab_cryptor::{
     crypt::{MAGIC_HEADER, decrypt_file, derive_key},
     encrypt_writer::EncryptWriter,
@@ -28,10 +26,10 @@ fn write_encrypted_tar_bytes(path: &Path, tar_bytes: &[u8]) -> Result<()> {
     output.write_all(&nonce)?;
 
     let key_bytes = derive_key(TEST_PASSWORD, &salt)?;
-    let key = Key::from_slice(&*key_bytes);
-    let aead = XChaCha20Poly1305::new(key);
-    let nonce_generic = chacha20poly1305::aead::generic_array::GenericArray::from_slice(&nonce);
-    let stream_encryptor = stream::EncryptorBE32::from_aead(aead, nonce_generic);
+    let key = Key::from(*key_bytes);
+    let aead = XChaCha20Poly1305::new(&key);
+    let nonce_generic = Nonce::<XChaCha20Poly1305, StreamBE32<XChaCha20Poly1305>>::from(nonce);
+    let stream_encryptor = EncryptorBE32::from_aead(aead, &nonce_generic);
     let encrypted_writer = EncryptWriter::new(output, stream_encryptor);
     let mut gz_encoder = GzEncoder::new(encrypted_writer, Compression::default());
 

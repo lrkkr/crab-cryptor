@@ -1,9 +1,12 @@
 use anyhow::Result;
+use base64::{Engine as _, engine::general_purpose};
 use crab_cryptor::crypt::{
-    decrypt_file, decrypt_name_core, derive_key, encrypt_file, encrypt_name_core,
+    decrypt_dir_name, decrypt_file, decrypt_name_core, derive_key, encrypt_dir_name, encrypt_file,
+    encrypt_name_core,
 };
 use os_str_bytes::OsStrBytes;
 use std::fs;
+use std::path::Path;
 
 const TEST_PASSWORD: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const WRONG_PASSWORD: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
@@ -18,6 +21,35 @@ fn test_text_encryption() -> Result<()> {
     let decrypted = decrypt_name_core(&encrypted, &filename_key)?;
 
     assert_eq!(decrypted.to_io_bytes(), Some(&plain_text[..]));
+    Ok(())
+}
+
+#[test]
+fn test_directory_name_encryption_round_trip() -> Result<()> {
+    let filename_key = derive_key(TEST_PASSWORD, TEST_FILENAME_SALT)?;
+    let temp_dir = tempfile::tempdir()?;
+    let source_path = temp_dir.path().join("测试文件夹");
+    let encrypted_parent_relative = Path::new("encrypted-parent");
+    let different_parent_relative = Path::new("different-parent");
+
+    let encrypted_path = encrypt_dir_name(&source_path, &filename_key, encrypted_parent_relative)?;
+    let decrypted_path =
+        decrypt_dir_name(&encrypted_path, &filename_key, different_parent_relative)?;
+
+    assert_ne!(encrypted_path.file_name(), source_path.file_name());
+    let encrypted_name = encrypted_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("encrypted directory name should be UTF-8"))?;
+    let encoded_name = encrypted_name
+        .strip_suffix("[crab]")
+        .ok_or_else(|| anyhow::anyhow!("encrypted directory suffix is missing"))?;
+    let packed = general_purpose::URL_SAFE_NO_PAD.decode(encoded_name)?;
+
+    assert!(!encrypted_name.starts_with("v3_"));
+    assert!(!encrypted_name.starts_with("v2_"));
+    assert_eq!(packed.get(24..26), Some(&[0xc3, 0x03][..]));
+    assert_eq!(decrypted_path, source_path);
     Ok(())
 }
 

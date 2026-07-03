@@ -1,5 +1,5 @@
+use aead_stream::EncryptorBE32;
 use chacha20poly1305::XChaCha20Poly1305;
-use chacha20poly1305::aead::stream::EncryptorBE32;
 use std::io::{self, Write};
 
 const BUFFER_LEN: usize = 64 * 1024; // 64 KB
@@ -20,9 +20,9 @@ impl<W: Write> EncryptWriter<W> {
     }
 
     fn write_encrypted_chunk(&mut self, plaintext: &[u8]) -> io::Result<()> {
-        let ciphertext = self
-            .encryptor
-            .encrypt_next(plaintext)
+        let mut ciphertext = plaintext.to_vec();
+        self.encryptor
+            .encrypt_next_in_place(b"", &mut ciphertext)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
         self.inner_writer.write_all(&ciphertext)
@@ -34,12 +34,11 @@ impl<W: Write> EncryptWriter<W> {
     /// Returns an error if final chunk encryption or the final write/flush fails.
     pub fn finish(mut self) -> io::Result<W> {
         // last chunk
-        let ciphertext = self
-            .encryptor
-            .encrypt_last(&self.buffer[..])
+        self.encryptor
+            .encrypt_last_in_place(b"", &mut self.buffer)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-        self.inner_writer.write_all(&ciphertext)?;
+        self.inner_writer.write_all(&self.buffer)?;
         self.inner_writer.flush()?;
         Ok(self.inner_writer)
     }

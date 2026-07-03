@@ -1,4 +1,5 @@
 use crate::{decrypt_reader::DecryptReader, encrypt_writer::EncryptWriter};
+use aead_stream::{DecryptorBE32, EncryptorBE32, StreamBE32};
 use anyhow::{Context, Result, anyhow};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{
@@ -6,8 +7,8 @@ use base64::{
     engine::{self, general_purpose},
 };
 use chacha20poly1305::{
-    Key, KeyInit, XChaCha20Poly1305,
-    aead::{Aead, stream},
+    Key, KeyInit, XChaCha20Poly1305, XNonce,
+    aead::{Aead, Payload},
 };
 use flate2::read::GzDecoder;
 use flate2::{Compression, write::GzEncoder};
@@ -30,9 +31,14 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 19;
 const NAME_NONCE_LEN: usize = 24;
 const NAME_CONTEXT_SALT_LEN: usize = 16;
-const NAME_VERSION_PREFIX: &str = "v2_";
+const NAME_V2_PREFIX: &str = "v2_";
+const NAME_V3_MARKER: &[u8] = &[0xc3, 0x03];
+const NAME_V3_KEY_DOMAIN: &[u8] = b"crab:name-key:v3";
+const NAME_V3_AAD_DOMAIN: &[u8] = b"crab:name:v3";
 const FILE_NAME_CONTEXT_LABEL: &[u8] = b"file-name";
 const DIR_NAME_CONTEXT_LABEL: &[u8] = b"dir-name";
+
+type XChaChaStreamNonce = aead_stream::Nonce<XChaCha20Poly1305, StreamBE32<XChaCha20Poly1305>>;
 
 fn derive_key_from_secret(secret: &[u8], salt: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
     if salt.len() < 8 {
@@ -61,7 +67,7 @@ pub fn derive_key(password: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
     derive_key_from_secret(password.as_bytes(), salt)
 }
 
-/// Derives a per-parent name key from the stable name master key.
+/// Derives a v2 per-parent name key from the stable name master key.
 ///
 /// # Errors
 /// Returns an error if the contextual Argon2 key derivation fails.
@@ -84,17 +90,95 @@ pub fn derive_name_key(
     derive_key_from_secret(master_key, &salt)
 }
 
-fn encrypt_name_with_context(
-    plain_text: &[u8],
+fn derive_v3_name_key(master_key: &[u8; 32], label: &[u8]) -> Zeroizing<[u8; 32]> {
+    let mut hasher = blake3::Hasher::new_keyed(master_key);
+    hasher.update(NAME_V3_KEY_DOMAIN);
+    hasher.update(label);
+    Zeroizing::new(*hasher.finalize().as_bytes())
+}
+
+fn v3_name_aad(label: &[u8]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(NAME_V3_AAD_DOMAIN.len() + NAME_V3_MARKER.len() + label.len());
+    aad.extend_from_slice(NAME_V3_AAD_DOMAIN);
+    aad.extend_from_slice(NAME_V3_MARKER);
+    aad.extend_from_slice(label);
+    aad
+}
+
+fn encrypt_name_v3(plain_text: &[u8], master_key: &[u8; 32], label: &[u8]) -> Result<String> {
+    let name_key = derive_v3_name_key(master_key, label);
+    let cipher = XChaCha20Poly1305::new((&*name_key).into());
+
+    let mut nonce = [0u8; NAME_NONCE_LEN];
+    rng().fill_bytes(&mut nonce);
+    let nonce_generic = XNonce::from(nonce);
+    let aad = v3_name_aad(label);
+    let ciphertext = cipher
+        .encrypt(
+            &nonce_generic,
+            Payload {
+                msg: plain_text,
+                aad: &aad,
+            },
+        )
+        .map_err(|err| anyhow!("Encrypting v3 filename: {err}"))?;
+
+    let mut packed = Vec::with_capacity(nonce.len() + NAME_V3_MARKER.len() + ciphertext.len());
+    packed.extend_from_slice(&nonce);
+    packed.extend_from_slice(NAME_V3_MARKER);
+    packed.extend_from_slice(&ciphertext);
+
+    Ok(engine::GeneralPurpose::new(&alphabet::URL_SAFE, general_purpose::NO_PAD).encode(packed))
+}
+
+fn decode_name(encrypted_name_b64: &str) -> Result<Vec<u8>> {
+    Ok(
+        engine::GeneralPurpose::new(&alphabet::URL_SAFE, general_purpose::NO_PAD)
+            .decode(encrypted_name_b64)?,
+    )
+}
+
+fn has_v3_name_marker(encrypted_name_b64: &str) -> Result<bool> {
+    let packed = decode_name(encrypted_name_b64)?;
+    Ok(packed
+        .get(NAME_NONCE_LEN..NAME_NONCE_LEN + NAME_V3_MARKER.len())
+        .is_some_and(|marker| marker == NAME_V3_MARKER))
+}
+
+fn decrypt_name_v3(
+    encrypted_name_b64: &str,
     master_key: &[u8; 32],
-    encrypted_parent_relative: &Path,
     label: &[u8],
-) -> Result<String> {
-    let name_key = derive_name_key(master_key, encrypted_parent_relative, label)?;
-    Ok(format!(
-        "{NAME_VERSION_PREFIX}{}",
-        encrypt_name_core(plain_text, &name_key)?
-    ))
+) -> Result<OsString> {
+    let packed = decode_name(encrypted_name_b64)?;
+    let minimum_len = NAME_NONCE_LEN + NAME_V3_MARKER.len() + 16;
+    if packed.len() < minimum_len {
+        return Err(anyhow!("Invalid v3 encrypted filename format"));
+    }
+
+    let (nonce, marker_and_ciphertext) = packed.split_at(NAME_NONCE_LEN);
+    let (marker, ciphertext) = marker_and_ciphertext.split_at(NAME_V3_MARKER.len());
+    if marker != NAME_V3_MARKER {
+        return Err(anyhow!("Invalid v3 encrypted filename marker"));
+    }
+
+    let name_key = derive_v3_name_key(master_key, label);
+    let cipher = XChaCha20Poly1305::new((&*name_key).into());
+    let nonce_generic = XNonce::try_from(nonce)?;
+    let aad = v3_name_aad(label);
+    let plain_text = cipher
+        .decrypt(
+            &nonce_generic,
+            Payload {
+                msg: ciphertext,
+                aad: &aad,
+            },
+        )
+        .map_err(|err| anyhow!("Decrypting v3 filename: {err}"))?;
+
+    OsStr::from_io_bytes(&plain_text)
+        .map(OsStr::to_os_string)
+        .ok_or_else(|| anyhow!("Failed to convert decrypted v3 text to OsStr"))
 }
 
 /// Encrypts a file or directory name into URL-safe Base64.
@@ -108,12 +192,12 @@ pub fn encrypt_name_core(plain_text: &[u8], key: &[u8; 32]) -> Result<String> {
     // generate Nonce
     let mut nonce = [0u8; NAME_NONCE_LEN];
     rng().fill_bytes(&mut nonce);
-    let nonce_generic = chacha20poly1305::aead::generic_array::GenericArray::from_slice(&nonce);
+    let nonce_generic = XNonce::from(nonce);
 
     // encrypt
     // Tag will be appended
     let ciphertext = cipher
-        .encrypt(nonce_generic, plain_text)
+        .encrypt(&nonce_generic, plain_text)
         .map_err(|err| anyhow!("Encrypting filename: {err}"))?;
 
     // concat [Nonce] + [Ciphertext]
@@ -131,8 +215,7 @@ pub fn encrypt_name_core(plain_text: &[u8], key: &[u8; 32]) -> Result<String> {
 /// Returns an error if decoding, authenticated decryption, or OS string conversion fails.
 pub fn decrypt_name_core(encrypted_name_b64: &str, key: &[u8; 32]) -> Result<OsString> {
     // Base64
-    let packed = engine::GeneralPurpose::new(&alphabet::URL_SAFE, general_purpose::NO_PAD)
-        .decode(encrypted_name_b64)?;
+    let packed = decode_name(encrypted_name_b64)?;
 
     // check length Nonce 24 + Tag 16
     if packed.len() < NAME_NONCE_LEN + 16 {
@@ -144,11 +227,11 @@ pub fn decrypt_name_core(encrypted_name_b64: &str, key: &[u8; 32]) -> Result<OsS
 
     // init cipher
     let cipher = XChaCha20Poly1305::new(key.into());
-    let nonce_generic = chacha20poly1305::aead::generic_array::GenericArray::from_slice(nonce);
+    let nonce_generic = XNonce::try_from(nonce)?;
 
     // decrypt
     let plain_text = cipher
-        .decrypt(nonce_generic, ciphertext)
+        .decrypt(&nonce_generic, ciphertext)
         .map_err(|err| anyhow!("Decrypting filename: {err}"))?;
 
     // to OsString
@@ -185,13 +268,13 @@ pub fn encrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
 
     // derive key
     let key_bytes = derive_key(password, &salt)?;
-    let key = Key::from_slice(&*key_bytes);
+    let key = Key::from(*key_bytes);
 
-    let aead = XChaCha20Poly1305::new(key);
-    let nonce_generic = chacha20poly1305::aead::generic_array::GenericArray::from_slice(&nonce);
+    let aead = XChaCha20Poly1305::new(&key);
+    let nonce_generic = XChaChaStreamNonce::from(nonce);
 
     // build encrypt pipeline
-    let stream_encryptor = stream::EncryptorBE32::from_aead(aead, nonce_generic);
+    let stream_encryptor = EncryptorBE32::from_aead(aead, &nonce_generic);
     let encrypted_writer = EncryptWriter::new(dist_file, stream_encryptor);
     let gz_encoder = GzEncoder::new(encrypted_writer, Compression::default());
     let mut tar_builder = Builder::new(gz_encoder);
@@ -239,11 +322,11 @@ pub fn decrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
     source_file.read_exact(&mut nonce)?;
 
     let key_bytes = derive_key(password, &salt)?;
-    let key = Key::from_slice(&*key_bytes);
+    let key = Key::from(*key_bytes);
 
-    let aead = XChaCha20Poly1305::new(key);
-    let nonce_generic = chacha20poly1305::aead::generic_array::GenericArray::from_slice(&nonce);
-    let stream_decryptor = stream::DecryptorBE32::from_aead(aead, nonce_generic);
+    let aead = XChaCha20Poly1305::new(&key);
+    let nonce_generic = XChaChaStreamNonce::from(nonce);
+    let stream_decryptor = DecryptorBE32::from_aead(aead, &nonce_generic);
 
     let decrypted_reader = DecryptReader::new(source_file, stream_decryptor)?;
 
@@ -400,24 +483,22 @@ fn unpack_archive_entry<R: Read>(entry: &mut tar::Entry<R>, dist_dir: &Path) -> 
 
 /// Builds the encrypted on-disk filename for a file.
 ///
+/// The parent-context argument is retained for source compatibility and is ignored by v3.
+///
 /// # Errors
-/// Returns an error if the source filename is missing or contextual name encryption fails.
+/// Returns an error if the source filename is missing or v3 name encryption fails.
 pub fn encrypt_file_name(
     source: &Path,
     master_key: &[u8; 32],
-    encrypted_parent_relative: &Path,
+    _encrypted_parent_relative: &Path,
 ) -> Result<PathBuf> {
     let source_file_name = source
         .file_name()
         .ok_or_else(|| anyhow!("Failed to get source file name"))?
         .to_io_bytes_lossy();
 
-    let encrypted_file_name = encrypt_name_with_context(
-        &source_file_name,
-        master_key,
-        encrypted_parent_relative,
-        FILE_NAME_CONTEXT_LABEL,
-    )?;
+    let encrypted_file_name =
+        encrypt_name_v3(&source_file_name, master_key, FILE_NAME_CONTEXT_LABEL)?;
 
     let dir_name = source
         .parent()
@@ -430,12 +511,14 @@ pub fn encrypt_file_name(
 
 /// Builds the encrypted on-disk directory name for a directory.
 ///
+/// The parent-context argument is retained for source compatibility and is ignored by v3.
+///
 /// # Errors
-/// Returns an error if the source directory name is missing or contextual name encryption fails.
+/// Returns an error if the source directory name is missing or v3 name encryption fails.
 pub fn encrypt_dir_name(
     source: &Path,
     master_key: &[u8; 32],
-    encrypted_parent_relative: &Path,
+    _encrypted_parent_relative: &Path,
 ) -> Result<PathBuf> {
     let source_dir_name = source
         .iter()
@@ -443,12 +526,7 @@ pub fn encrypt_dir_name(
         .ok_or_else(|| anyhow!("Failed to get source dir name"))?
         .to_io_bytes_lossy();
 
-    let encrypted_dir_name = encrypt_name_with_context(
-        &source_dir_name,
-        master_key,
-        encrypted_parent_relative,
-        DIR_NAME_CONTEXT_LABEL,
-    )?;
+    let encrypted_dir_name = encrypt_name_v3(&source_dir_name, master_key, DIR_NAME_CONTEXT_LABEL)?;
 
     let dir_name = source
         .parent()
@@ -468,6 +546,26 @@ pub fn decrypt_dir_name(
     master_key: &[u8; 32],
     encrypted_parent_relative: &Path,
 ) -> Result<PathBuf> {
+    decrypt_dir_name_with_contexts(
+        source,
+        master_key,
+        &[encrypted_parent_relative.to_path_buf()],
+    )
+}
+
+/// Reconstructs a plaintext directory path while trying compatible v2 parent contexts.
+///
+/// v3 and legacy unprefixed names do not depend on these contexts. For v2 names, contexts are
+/// attempted in order and authenticated decryption determines the matching one.
+///
+/// # Errors
+/// Returns an error if the encrypted directory name is malformed, no v2 context authenticates,
+/// or name decryption fails.
+pub fn decrypt_dir_name_with_contexts(
+    source: &Path,
+    master_key: &[u8; 32],
+    encrypted_parent_relatives: &[PathBuf],
+) -> Result<PathBuf> {
     let source_dir_str = source
         .iter()
         .next_back()
@@ -475,27 +573,88 @@ pub fn decrypt_dir_name(
         .to_str()
         .ok_or_else(|| anyhow!("Failed to get source dir name"))?;
 
-    // remove [crab]
-    if source_dir_str.len() < 6 {
-        return Err(anyhow!("Invalid directory name format"));
-    }
-    let encrypted_part = &source_dir_str[..source_dir_str.len() - 6];
+    let encrypted_part = source_dir_str
+        .strip_suffix("[crab]")
+        .ok_or_else(|| anyhow!("Invalid directory name format"))?;
 
-    let decrypted_os_str =
-        if let Some(versioned_name) = encrypted_part.strip_prefix(NAME_VERSION_PREFIX) {
+    let decrypted_os_str = if let Some(versioned_name) = encrypted_part.strip_prefix(NAME_V2_PREFIX)
+    {
+        let mut first_error = None;
+        let mut decrypted = None;
+
+        for encrypted_parent_relative in encrypted_parent_relatives {
             let name_key = derive_name_key(
                 master_key,
                 encrypted_parent_relative,
                 DIR_NAME_CONTEXT_LABEL,
             )?;
-            decrypt_name_core(versioned_name, &name_key)?
-        } else {
-            decrypt_name_core(encrypted_part, master_key)?
-        };
+            match decrypt_name_core(versioned_name, &name_key) {
+                Ok(name) => {
+                    decrypted = Some(name);
+                    break;
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+
+        decrypted.ok_or_else(|| {
+            first_error.unwrap_or_else(|| anyhow!("No v2 parent context was provided"))
+        })?
+    } else if has_v3_name_marker(encrypted_part)? {
+        match decrypt_name_v3(encrypted_part, master_key, DIR_NAME_CONTEXT_LABEL) {
+            Ok(name) => name,
+            Err(v3_error) => match decrypt_name_core(encrypted_part, master_key) {
+                // A legacy ciphertext can randomly contain the binary marker.
+                Ok(name) => name,
+                Err(_) => return Err(v3_error),
+            },
+        }
+    } else {
+        decrypt_name_core(encrypted_part, master_key)?
+    };
 
     let dir_name = source
         .parent()
         .ok_or_else(|| anyhow!("Failed to get dir name"))?;
 
     Ok(dir_name.join(decrypted_os_str))
+}
+
+#[cfg(test)]
+mod name_format_tests {
+    use super::*;
+
+    const TEST_PASSWORD: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn v2_directory_names_remain_decryptable_with_context_candidates() -> Result<()> {
+        let master_key = derive_key(TEST_PASSWORD, NAME_MASTER_SALT)?;
+        let correct_context = Path::new("outer[crab]");
+        let v2_name_key = derive_name_key(&master_key, correct_context, DIR_NAME_CONTEXT_LABEL)?;
+        let encrypted_core = encrypt_name_core(b"legacy-v2", &v2_name_key)?;
+        let source = Path::new("root").join(format!("{NAME_V2_PREFIX}{encrypted_core}[crab]"));
+        let contexts = vec![
+            PathBuf::from("wrong-context"),
+            correct_context.to_path_buf(),
+        ];
+
+        let decrypted = decrypt_dir_name_with_contexts(&source, &master_key, &contexts)?;
+
+        assert_eq!(decrypted, Path::new("root").join("legacy-v2"));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_unprefixed_directory_names_remain_decryptable() -> Result<()> {
+        let master_key = derive_key(TEST_PASSWORD, NAME_MASTER_SALT)?;
+        let encrypted_core = encrypt_name_core(b"legacy", &master_key)?;
+        let source = Path::new("root").join(format!("{encrypted_core}[crab]"));
+
+        let decrypted = decrypt_dir_name(&source, &master_key, Path::new("ignored"))?;
+
+        assert_eq!(decrypted, Path::new("root").join("legacy"));
+        Ok(())
+    }
 }

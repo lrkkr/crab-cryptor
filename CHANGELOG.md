@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Bug Fixes
+
+- Make encrypted names path-independent
+
 ### Deps
 
 - Dump deps to latest version
