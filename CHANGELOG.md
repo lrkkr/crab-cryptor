@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
+- Show full error chains
+
+## [4.2.0] - 2026-07-03
+
+### Bug Fixes
+
 - Make encrypted names path-independent
 
 ### Deps

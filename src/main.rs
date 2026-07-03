@@ -343,7 +343,7 @@ fn execute_file_plans(
 
         if let Err(error) = execute_file_plan(plan, mode, password) {
             let path = plan.source_path.display();
-            bar.println(format!("Error processing {path}: {error}"));
+            bar.println(format!("Error processing {path}: {error:#}"));
             error_count.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -428,7 +428,7 @@ fn execute_dir_rename_plans(dir_plans: &[DirRenamePlan], bar: &ProgressBar) -> u
             let source_path = plan.source_path.display();
             let target_path = plan.target_path.display();
             bar.println(format!(
-                "Error renaming dir {source_path} -> {target_path}: {error}"
+                "Error renaming dir {source_path} -> {target_path}: {error:#}"
             ));
             error_count += 1;
         }
