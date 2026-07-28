@@ -16,15 +16,15 @@ path = "src/lib.rs"
 
 [dependencies]
 aead-stream = "0.6.0"
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 argon2 = { version = "0.5.3", features = ["std"] }
-base64 = "0.22.1"
+base64 = "0.23.0"
 blake3 = "1.8.5"
 chacha20poly1305 = { version = "0.11.0" }
 flate2 = { version = "1.1.9", features = ["zlib"] }
 indicatif = "0.18.6"
 inquire = "0.9.4"
-os_str_bytes = "7.2.0"
+os_str_bytes = "7.2.1"
 rand = "0.10.2"
 rayon = "1.12.0"
 tar = "0.4"
