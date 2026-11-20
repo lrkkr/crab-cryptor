@@ -2,7 +2,7 @@ use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose};
 use crab_cryptor::crypt::{
     decrypt_dir_name, decrypt_file, decrypt_name_core, derive_key, encrypt_dir_name, encrypt_file,
-    encrypt_name_core,
+    encrypt_name_core, has_encrypted_file_header,
 };
 use os_str_bytes::OsStrBytes;
 use std::fs;
@@ -63,6 +63,7 @@ fn test_file_encryption() -> Result<()> {
 
     let encrypted_path = temp_dir.path().join("test.enc");
     encrypt_file(&temp_path, &encrypted_path, TEST_PASSWORD)?;
+    assert!(has_encrypted_file_header(&encrypted_path));
 
     let decrypted_dir = temp_dir.path().join("decrypted");
     fs::create_dir(&decrypted_dir)?;

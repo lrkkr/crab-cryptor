@@ -1,6 +1,8 @@
-use crate::{decrypt_reader::DecryptReader, encrypt_writer::EncryptWriter};
+use crate::{
+    archive::unpack_archive, decrypt_reader::DecryptReader, encrypt_writer::EncryptWriter,
+};
 use aead_stream::{DecryptorBE32, EncryptorBE32, StreamBE32};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chacha20poly1305::{
@@ -12,12 +14,10 @@ use flate2::{Compression, write::GzEncoder};
 use os_str_bytes::OsStrBytes;
 use rand::{Rng, rng};
 use std::ffi::{OsStr, OsString};
-use std::path::{Component, Path, PathBuf};
-use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
-};
-use tar::{Archive, Builder, EntryType};
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use tar::Builder;
 use zeroize::Zeroizing;
 
 pub const MAGIC_HEADER: &[u8] = b"CRABv4";
@@ -128,23 +128,7 @@ fn encrypt_name_v3(plain_text: &[u8], master_key: &[u8; 32], label: &[u8]) -> Re
     Ok(URL_SAFE_NO_PAD.encode(packed))
 }
 
-fn decode_name(encrypted_name_b64: &str) -> Result<Vec<u8>> {
-    Ok(URL_SAFE_NO_PAD.decode(encrypted_name_b64)?)
-}
-
-fn has_v3_name_marker(encrypted_name_b64: &str) -> Result<bool> {
-    let packed = decode_name(encrypted_name_b64)?;
-    Ok(packed
-        .get(NAME_NONCE_LEN..NAME_NONCE_LEN + NAME_V3_MARKER.len())
-        .is_some_and(|marker| marker == NAME_V3_MARKER))
-}
-
-fn decrypt_name_v3(
-    encrypted_name_b64: &str,
-    master_key: &[u8; 32],
-    label: &[u8],
-) -> Result<OsString> {
-    let packed = decode_name(encrypted_name_b64)?;
+fn decrypt_name_v3(packed: &[u8], master_key: &[u8; 32], label: &[u8]) -> Result<OsString> {
     let minimum_len = NAME_NONCE_LEN + NAME_V3_MARKER.len() + 16;
     if packed.len() < minimum_len {
         return Err(anyhow!("Invalid v3 encrypted filename format"));
@@ -208,9 +192,10 @@ pub fn encrypt_name_core(plain_text: &[u8], key: &[u8; 32]) -> Result<String> {
 /// # Errors
 /// Returns an error if decoding, authenticated decryption, or OS string conversion fails.
 pub fn decrypt_name_core(encrypted_name_b64: &str, key: &[u8; 32]) -> Result<OsString> {
-    // Base64
-    let packed = decode_name(encrypted_name_b64)?;
+    decrypt_legacy_name(&URL_SAFE_NO_PAD.decode(encrypted_name_b64)?, key)
+}
 
+fn decrypt_legacy_name(packed: &[u8], key: &[u8; 32]) -> Result<OsString> {
     // check length Nonce 24 + Tag 16
     if packed.len() < NAME_NONCE_LEN + 16 {
         return Err(anyhow!("Invalid encrypted filename format"));
@@ -289,6 +274,28 @@ pub fn encrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
     Ok(())
 }
 
+/// Checks whether a file has the crab stream header and minimum ciphertext length.
+/// This probe does not authenticate its contents and returns `false` on I/O errors.
+#[must_use]
+pub fn has_encrypted_file_header(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| metadata.len() >= MIN_ENCRYPTED_FILE_LEN as u64)
+        && File::open(path).is_ok_and(|mut file| read_file_header(&mut file).is_ok())
+}
+
+fn read_file_header(reader: &mut impl Read) -> Result<([u8; SALT_LEN], [u8; NONCE_LEN])> {
+    let mut header = [0u8; MAGIC_HEADER.len()];
+    reader.read_exact(&mut header)?;
+    if header != MAGIC_HEADER {
+        return Err(anyhow!("Invalid file header: not a valid encrypted file"));
+    }
+
+    let mut salt = [0u8; SALT_LEN];
+    reader.read_exact(&mut salt)?;
+    let mut nonce = [0u8; NONCE_LEN];
+    reader.read_exact(&mut nonce)?;
+    Ok((salt, nonce))
+}
+
 /// Decrypts a crab stream file into a target directory.
 ///
 /// # Errors
@@ -299,20 +306,8 @@ pub fn decrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
     dist_dir: Q,
     password: &str,
 ) -> Result<()> {
-    let source_path = source.as_ref();
-    let mut source_file = File::open(source_path)?;
-
-    let mut header = vec![0u8; MAGIC_HEADER.len()];
-    source_file.read_exact(&mut header)?;
-    if header != MAGIC_HEADER {
-        return Err(anyhow!("Invalid file header: not a valid encrypted file"));
-    }
-
-    let mut salt = [0u8; SALT_LEN];
-    source_file.read_exact(&mut salt)?;
-
-    let mut nonce = [0u8; NONCE_LEN];
-    source_file.read_exact(&mut nonce)?;
+    let mut source_file = File::open(source.as_ref())?;
+    let (salt, nonce) = read_file_header(&mut source_file)?;
 
     let key_bytes = derive_key(password, &salt)?;
     let key = Key::from(*key_bytes);
@@ -325,153 +320,7 @@ pub fn decrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
 
     let gz_decoder = GzDecoder::new(decrypted_reader);
 
-    let mut archive = Archive::new(gz_decoder);
-
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        unpack_archive_entry(&mut entry, dist_dir.as_ref())?;
-    }
-
-    Ok(())
-}
-
-fn validate_archive_entry_path(entry_path: &Path) -> Result<()> {
-    if entry_path.is_absolute() {
-        return Err(anyhow!(
-            "Illegal archive entry path: {}",
-            entry_path.display()
-        ));
-    }
-
-    if entry_path.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
-        return Err(anyhow!(
-            "Illegal archive entry path: {}",
-            entry_path.display()
-        ));
-    }
-
-    Ok(())
-}
-
-fn validate_archive_entry_type(entry_type: EntryType, entry_path: &Path) -> Result<()> {
-    if entry_type.is_file() || entry_type.is_dir() {
-        return Ok(());
-    }
-
-    let entry_path = entry_path.display();
-    Err(anyhow!(
-        "Unsupported archive entry type {entry_type:?} for {entry_path}"
-    ))
-}
-
-fn ensure_directory_exists_in_dist(dist_dir: &Path, dir: &Path) -> Result<()> {
-    let mut ancestor = dir;
-    let mut dirs_to_create = Vec::<PathBuf>::new();
-
-    while fs::symlink_metadata(ancestor).is_err() {
-        dirs_to_create.push(ancestor.to_path_buf());
-        ancestor = ancestor.parent().ok_or_else(|| {
-            let dir = dir.display();
-            anyhow!("Failed to resolve parent path while preparing archive destination {dir}")
-        })?;
-    }
-
-    for ancestor in dirs_to_create.iter().rev() {
-        if let Some(parent) = ancestor.parent() {
-            validate_inside_dist(dist_dir, parent)?;
-        }
-
-        fs::create_dir(ancestor)
-            .or_else(|error| {
-                if error.kind() == std::io::ErrorKind::AlreadyExists
-                    && fs::metadata(ancestor).is_ok_and(|metadata| metadata.is_dir())
-                {
-                    return Ok(());
-                }
-                Err(error)
-            })
-            .with_context(|| {
-                let ancestor = ancestor.display();
-                format!("Failed to create archive destination directory {ancestor}")
-            })?;
-    }
-
-    Ok(())
-}
-
-fn validate_inside_dist(dist_dir: &Path, path: &Path) -> Result<()> {
-    let canonical_path = path.canonicalize().with_context(|| {
-        let path = path.display();
-        format!("Failed to canonicalize archive destination path {path}")
-    })?;
-    let canonical_dist_dir = dist_dir.canonicalize().with_context(|| {
-        let dist_dir = dist_dir.display();
-        format!("Failed to canonicalize extraction root {dist_dir}")
-    })?;
-
-    if !canonical_path.starts_with(&canonical_dist_dir) {
-        let path = path.display();
-        anyhow::bail!("Refusing to unpack archive entry outside destination root via {path}");
-    }
-
-    Ok(())
-}
-
-fn unpack_archive_entry<R: Read>(entry: &mut tar::Entry<R>, dist_dir: &Path) -> Result<()> {
-    let entry_path = entry.path()?.into_owned();
-    validate_archive_entry_path(&entry_path)?;
-
-    let entry_type = entry.header().entry_type();
-    validate_archive_entry_type(entry_type, &entry_path)?;
-
-    let target_path = dist_dir.join(&entry_path);
-    if target_path.exists() {
-        let target_path = target_path.display();
-        return Err(anyhow!(
-            "Refusing to overwrite existing path during extraction: {target_path}"
-        ));
-    }
-
-    if entry_type.is_dir() {
-        ensure_directory_exists_in_dist(dist_dir, &target_path).with_context(|| {
-            let target_path = target_path.display();
-            format!("Failed to create directory for archive entry {target_path}")
-        })?;
-        return Ok(());
-    }
-
-    if let Some(parent) = target_path.parent() {
-        ensure_directory_exists_in_dist(dist_dir, parent).with_context(|| {
-            let target_path = target_path.display();
-            format!("Failed to create parent directory for {target_path}")
-        })?;
-        validate_inside_dist(dist_dir, parent)?;
-    }
-
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&target_path)
-        .with_context(|| {
-            let target_path = target_path.display();
-            format!("Failed to create output file {target_path}")
-        })?;
-
-    std::io::copy(entry, &mut output).with_context(|| {
-        let target_path = target_path.display();
-        format!("Failed to unpack archive entry into {target_path}")
-    })?;
-    output.flush().with_context(|| {
-        let target_path = target_path.display();
-        format!("Failed to flush unpacked archive entry {target_path}")
-    })?;
-
-    Ok(())
+    unpack_archive(gz_decoder, dist_dir.as_ref())
 }
 
 /// Builds the encrypted on-disk filename for a file.
@@ -572,6 +421,10 @@ pub fn decrypt_dir_name_with_contexts(
 
     let decrypted_os_str = if let Some(versioned_name) = encrypted_part.strip_prefix(NAME_V2_PREFIX)
     {
+        if encrypted_parent_relatives.is_empty() {
+            anyhow::bail!("No v2 parent context was provided");
+        }
+        let packed = URL_SAFE_NO_PAD.decode(versioned_name)?;
         let mut first_error = None;
         let mut decrypted = None;
 
@@ -581,7 +434,7 @@ pub fn decrypt_dir_name_with_contexts(
                 encrypted_parent_relative,
                 DIR_NAME_CONTEXT_LABEL,
             )?;
-            match decrypt_name_core(versioned_name, &name_key) {
+            match decrypt_legacy_name(&packed, &name_key) {
                 Ok(name) => {
                     decrypted = Some(name);
                     break;
@@ -595,17 +448,17 @@ pub fn decrypt_dir_name_with_contexts(
         decrypted.ok_or_else(|| {
             first_error.unwrap_or_else(|| anyhow!("No v2 parent context was provided"))
         })?
-    } else if has_v3_name_marker(encrypted_part)? {
-        match decrypt_name_v3(encrypted_part, master_key, DIR_NAME_CONTEXT_LABEL) {
-            Ok(name) => name,
-            Err(v3_error) => match decrypt_name_core(encrypted_part, master_key) {
-                // A legacy ciphertext can randomly contain the binary marker.
-                Ok(name) => name,
-                Err(_) => return Err(v3_error),
-            },
-        }
     } else {
-        decrypt_name_core(encrypted_part, master_key)?
+        let packed = URL_SAFE_NO_PAD.decode(encrypted_part)?;
+        let marker = packed.get(NAME_NONCE_LEN..NAME_NONCE_LEN + NAME_V3_MARKER.len());
+        if marker == Some(NAME_V3_MARKER) {
+            decrypt_name_v3(&packed, master_key, DIR_NAME_CONTEXT_LABEL).or_else(|v3_error| {
+                // A legacy ciphertext can randomly contain the binary marker.
+                decrypt_legacy_name(&packed, master_key).map_err(|_| v3_error)
+            })?
+        } else {
+            decrypt_legacy_name(&packed, master_key)?
+        }
     };
 
     let dir_name = source

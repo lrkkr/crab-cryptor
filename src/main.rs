@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use crab_cryptor::crypt::{
-    MAGIC_HEADER, MIN_ENCRYPTED_FILE_LEN, NAME_MASTER_SALT, decrypt_dir_name_with_contexts,
-    decrypt_file, derive_key, encrypt_dir_name, encrypt_file, encrypt_file_name,
+    NAME_MASTER_SALT, decrypt_dir_name_with_contexts, decrypt_file, derive_key, encrypt_dir_name,
+    encrypt_file, encrypt_file_name, has_encrypted_file_header,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::{Confirm, Password, Select, Text};
@@ -9,7 +9,6 @@ use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
@@ -182,10 +181,18 @@ fn build_operation_plan(
     snapshot: &ScanSnapshot,
     name_master_key: &[u8; 32],
 ) -> Result<OperationPlan> {
-    match mode {
-        Mode::Encrypt => build_encrypt_operation_plan(root_path, snapshot, name_master_key),
-        Mode::Decrypt => build_decrypt_operation_plan(root_path, snapshot, name_master_key),
-    }
+    let mut plan = match mode {
+        Mode::Encrypt => build_encrypt_operation_plan(root_path, snapshot, name_master_key)?,
+        Mode::Decrypt => build_decrypt_operation_plan(root_path, snapshot, name_master_key)?,
+    };
+    validate_dir_rename_plans(&plan.dir_plans)?;
+    plan.dir_plans.sort_by(|left, right| {
+        right
+            .depth
+            .cmp(&left.depth)
+            .then_with(|| left.source_path.cmp(&right.source_path))
+    });
+    Ok(plan)
 }
 
 fn build_encrypt_operation_plan(
@@ -232,14 +239,6 @@ fn build_encrypt_operation_plan(
             kind: FilePlanKind::Encrypt { target_path },
         });
     }
-
-    validate_dir_rename_plans(&dir_plans)?;
-    dir_plans.sort_by(|left, right| {
-        right
-            .depth
-            .cmp(&left.depth)
-            .then_with(|| left.source_path.cmp(&right.source_path))
-    });
 
     Ok(OperationPlan {
         file_plans,
@@ -295,14 +294,6 @@ fn build_decrypt_operation_plan(
             target_path,
         });
     }
-
-    validate_dir_rename_plans(&dir_plans)?;
-    dir_plans.sort_by(|left, right| {
-        right
-            .depth
-            .cmp(&left.depth)
-            .then_with(|| left.source_path.cmp(&right.source_path))
-    });
 
     Ok(OperationPlan {
         file_plans,
@@ -527,39 +518,13 @@ fn is_crab_dir(path: &Path) -> bool {
 }
 
 fn is_file_encrypted(path: &Path) -> bool {
-    if path.extension() != Some(OsStr::new("crab")) {
-        return false;
-    }
-
-    let Ok(metadata) = fs::metadata(path) else {
-        return false;
-    };
-
-    if metadata.len() < MIN_ENCRYPTED_FILE_LEN as u64 {
-        return false;
-    }
-
-    let Ok(mut file) = fs::File::open(path) else {
-        return false;
-    };
-
-    let mut header = vec![0u8; MAGIC_HEADER.len()];
-    if file.read_exact(&mut header).is_err() || header != MAGIC_HEADER {
-        return false;
-    }
-
-    let mut salt = [0u8; 16];
-    if file.read_exact(&mut salt).is_err() {
-        return false;
-    }
-
-    let mut nonce = [0u8; 19];
-    file.read_exact(&mut nonce).is_ok()
+    path.extension() == Some(OsStr::new("crab")) && has_encrypted_file_header(path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crab_cryptor::crypt::MAGIC_HEADER;
     use tempfile::tempdir;
 
     const TEST_PASSWORD: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -623,7 +588,8 @@ mod tests {
 
         let snapshot = collect_snapshot(root_path);
         let name_master_key = derive_key(TEST_PASSWORD, NAME_MASTER_SALT)?;
-        let operation_plan = build_encrypt_operation_plan(root_path, &snapshot, &name_master_key)?;
+        let operation_plan =
+            build_operation_plan(Mode::Encrypt, root_path, &snapshot, &name_master_key)?;
 
         assert_eq!(operation_plan.dir_plans.len(), 2);
         assert_eq!(
@@ -653,8 +619,12 @@ mod tests {
 
         let name_master_key = derive_key(TEST_PASSWORD, NAME_MASTER_SALT)?;
         let encrypt_snapshot = collect_snapshot(root_path);
-        let encrypt_plan =
-            build_encrypt_operation_plan(root_path, &encrypt_snapshot, &name_master_key)?;
+        let encrypt_plan = build_operation_plan(
+            Mode::Encrypt,
+            root_path,
+            &encrypt_snapshot,
+            &name_master_key,
+        )?;
         let encrypted_outer = encrypt_plan
             .dir_plans
             .iter()
@@ -669,8 +639,12 @@ mod tests {
         assert!(encrypted_outer.exists());
 
         let decrypt_snapshot = collect_snapshot(&encrypted_outer);
-        let decrypt_plan =
-            build_decrypt_operation_plan(&encrypted_outer, &decrypt_snapshot, &name_master_key)?;
+        let decrypt_plan = build_operation_plan(
+            Mode::Decrypt,
+            &encrypted_outer,
+            &decrypt_snapshot,
+            &name_master_key,
+        )?;
 
         assert_eq!(decrypt_plan.dir_plans.len(), 2);
         assert!(
