@@ -1,6 +1,6 @@
 use aead_stream::DecryptorBE32;
 use chacha20poly1305::XChaCha20Poly1305;
-use std::io::{self, Read};
+use std::io::{self, Cursor, Read};
 
 const CHUNK_SIZE: usize = 64 * 1024 + 16; // 64KB Data + 16B Tag
 
@@ -9,8 +9,7 @@ pub struct DecryptReader<R: Read> {
 
     decryptor: Option<DecryptorBE32<XChaCha20Poly1305>>,
 
-    plaintext_buffer: Vec<u8>,
-    plaintext_pos: usize,
+    plaintext_buffer: Cursor<Vec<u8>>,
     current_ciphertext: Vec<u8>,
     finished: bool,
 }
@@ -47,8 +46,7 @@ impl<R: Read> DecryptReader<R> {
         Ok(Self {
             inner_reader: reader,
             decryptor: Some(decryptor),
-            plaintext_buffer: Vec::new(),
-            plaintext_pos: 0,
+            plaintext_buffer: Cursor::default(),
             current_ciphertext: first_chunk,
             finished: false,
         })
@@ -62,24 +60,9 @@ impl<R: Read> Read for DecryptReader<R> {
         }
 
         loop {
-            if self.plaintext_pos < self.plaintext_buffer.len() {
-                let available = self.plaintext_buffer.len() - self.plaintext_pos;
-                let to_copy = std::cmp::min(available, buf.len());
-                let end = self.plaintext_pos + to_copy;
-                let source = self
-                    .plaintext_buffer
-                    .get(self.plaintext_pos..end)
-                    .ok_or_else(|| io::Error::other("Plaintext buffer cursor out of bounds"))?;
-                let destination = buf
-                    .get_mut(..to_copy)
-                    .ok_or_else(|| io::Error::other("Destination buffer cursor out of bounds"))?;
-                destination.copy_from_slice(source);
-                self.plaintext_pos += to_copy;
-                return Ok(to_copy);
-            }
-
-            if self.finished {
-                return Ok(0);
+            let copied = self.plaintext_buffer.read(buf)?;
+            if copied != 0 || self.finished {
+                return Ok(copied);
             }
 
             let next_chunk = read_ciphertext_chunk(&mut self.inner_reader)?;
@@ -119,8 +102,7 @@ impl<R: Read> Read for DecryptReader<R> {
                 self.current_ciphertext = next_chunk;
             }
 
-            self.plaintext_buffer = decrypted_chunk;
-            self.plaintext_pos = 0;
+            self.plaintext_buffer = Cursor::new(decrypted_chunk);
         }
     }
 }

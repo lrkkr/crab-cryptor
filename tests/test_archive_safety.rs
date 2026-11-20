@@ -35,8 +35,7 @@ fn write_encrypted_tar_bytes(path: &Path, tar_bytes: &[u8]) -> Result<()> {
 
     gz_encoder.write_all(tar_bytes)?;
     let encrypted_writer = gz_encoder.finish()?;
-    let mut output = encrypted_writer.finish()?;
-    output.flush()?;
+    encrypted_writer.finish()?;
 
     Ok(())
 }

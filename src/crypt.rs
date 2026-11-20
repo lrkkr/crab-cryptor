@@ -2,10 +2,7 @@ use crate::{decrypt_reader::DecryptReader, encrypt_writer::EncryptWriter};
 use aead_stream::{DecryptorBE32, EncryptorBE32, StreamBE32};
 use anyhow::{Context, Result, anyhow};
 use argon2::{Algorithm, Argon2, Params, Version};
-use base64::{
-    Engine as _, alphabet,
-    engine::{self, general_purpose},
-};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chacha20poly1305::{
     Key, KeyInit, XChaCha20Poly1305, XNonce,
     aead::{Aead, Payload},
@@ -128,14 +125,11 @@ fn encrypt_name_v3(plain_text: &[u8], master_key: &[u8; 32], label: &[u8]) -> Re
     packed.extend_from_slice(NAME_V3_MARKER);
     packed.extend_from_slice(&ciphertext);
 
-    Ok(engine::GeneralPurpose::new(&alphabet::URL_SAFE, general_purpose::NO_PAD).encode(packed))
+    Ok(URL_SAFE_NO_PAD.encode(packed))
 }
 
 fn decode_name(encrypted_name_b64: &str) -> Result<Vec<u8>> {
-    Ok(
-        engine::GeneralPurpose::new(&alphabet::URL_SAFE, general_purpose::NO_PAD)
-            .decode(encrypted_name_b64)?,
-    )
+    Ok(URL_SAFE_NO_PAD.decode(encrypted_name_b64)?)
 }
 
 fn has_v3_name_marker(encrypted_name_b64: &str) -> Result<bool> {
@@ -206,7 +200,7 @@ pub fn encrypt_name_core(plain_text: &[u8], key: &[u8; 32]) -> Result<String> {
     packed.extend_from_slice(&ciphertext);
 
     // Base64
-    Ok(engine::GeneralPurpose::new(&alphabet::URL_SAFE, general_purpose::NO_PAD).encode(packed))
+    Ok(URL_SAFE_NO_PAD.encode(packed))
 }
 
 /// Decrypts a URL-safe Base64 encoded name back into an OS string.
@@ -290,8 +284,7 @@ pub fn encrypt_file<P: AsRef<Path>, Q: AsRef<Path>>(
     let gz = tar_builder.into_inner()?;
     let enc = gz.finish()?;
 
-    let mut final_file = enc.finish()?;
-    final_file.flush()?;
+    enc.finish()?;
 
     Ok(())
 }

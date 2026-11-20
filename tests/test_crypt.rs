@@ -90,7 +90,7 @@ fn test_empty_file_encryption() -> Result<()> {
     decrypt_file(&encrypted_path, &decrypted_dir, TEST_PASSWORD)?;
 
     let decrypted_content = fs::read(&decrypted_path)?;
-    assert!(decrypted_content.is_empty());
+    assert_eq!(decrypted_content, [] as [u8; 0]);
 
     Ok(())
 }
@@ -113,7 +113,7 @@ fn test_wrong_password_does_not_create_output() -> Result<()> {
     };
 
     assert!(!decrypted_path.exists());
-    assert!(!error.to_string().is_empty());
+    assert_ne!(error.to_string(), "");
     Ok(())
 }
 

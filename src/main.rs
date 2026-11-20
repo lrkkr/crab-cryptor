@@ -11,7 +11,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+
 use walkdir::WalkDir;
 use zeroize::Zeroizing;
 
@@ -124,7 +124,7 @@ fn main() -> Result<()> {
     .progress_chars("#>-");
     bar.set_style(style);
 
-    let summary = execute_operation_plan(&operation_plan, mode, password.as_str(), &bar);
+    let summary = execute_operation_plan(&operation_plan, password.as_str(), &bar);
     let total_errors = summary.file_errors + summary.dir_errors;
 
     if total_errors > 0 {
@@ -312,13 +312,12 @@ fn build_decrypt_operation_plan(
 
 fn execute_operation_plan(
     operation_plan: &OperationPlan,
-    mode: Mode,
     password: &str,
     bar: &ProgressBar,
 ) -> ExecutionSummary {
     // Files keep the directory topology stable, so they can run in parallel first.
     // Directory renames depend on parent-child ordering, so they execute serially from deepest to shallowest.
-    let file_errors = execute_file_plans(&operation_plan.file_plans, mode, password, bar);
+    let file_errors = execute_file_plans(&operation_plan.file_plans, password, bar);
     let dir_errors = execute_dir_rename_plans(&operation_plan.dir_plans, bar);
 
     ExecutionSummary {
@@ -327,35 +326,30 @@ fn execute_operation_plan(
     }
 }
 
-fn execute_file_plans(
-    file_plans: &[FilePlan],
-    mode: Mode,
-    password: &str,
-    bar: &ProgressBar,
-) -> usize {
-    let error_count = AtomicUsize::new(0);
+fn execute_file_plans(file_plans: &[FilePlan], password: &str, bar: &ProgressBar) -> usize {
+    file_plans
+        .par_iter()
+        .map(|plan| {
+            if let Some(name) = plan.source_path.file_name() {
+                let name = name.to_string_lossy();
+                bar.set_message(format!("Processing: {name}"));
+            }
 
-    file_plans.par_iter().for_each(|plan| {
-        if let Some(name) = plan.source_path.file_name() {
-            let name = name.to_string_lossy();
-            bar.set_message(format!("Processing: {name}"));
-        }
+            let result = execute_file_plan(plan, password);
+            if let Err(error) = &result {
+                let path = plan.source_path.display();
+                bar.println(format!("Error processing {path}: {error:#}"));
+            }
 
-        if let Err(error) = execute_file_plan(plan, mode, password) {
-            let path = plan.source_path.display();
-            bar.println(format!("Error processing {path}: {error:#}"));
-            error_count.fetch_add(1, Ordering::Relaxed);
-        }
-
-        bar.inc(1);
-    });
-
-    error_count.load(Ordering::Relaxed)
+            bar.inc(1);
+            usize::from(result.is_err())
+        })
+        .sum()
 }
 
-fn execute_file_plan(plan: &FilePlan, mode: Mode, password: &str) -> Result<()> {
-    match (&plan.kind, mode) {
-        (FilePlanKind::Encrypt { target_path }, Mode::Encrypt) => {
+fn execute_file_plan(plan: &FilePlan, password: &str) -> Result<()> {
+    match &plan.kind {
+        FilePlanKind::Encrypt { target_path } => {
             if target_path.exists() {
                 let target_path = target_path.display();
                 anyhow::bail!("Refusing to overwrite existing encrypted file {target_path}");
@@ -393,7 +387,7 @@ fn execute_file_plan(plan: &FilePlan, mode: Mode, password: &str) -> Result<()> 
                 format!("Failed to remove original file {source_path}")
             })?;
         }
-        (FilePlanKind::Decrypt { output_dir }, Mode::Decrypt) => {
+        FilePlanKind::Decrypt { output_dir } => {
             decrypt_file(&plan.source_path, output_dir, password).with_context(|| {
                 let source_path = plan.source_path.display();
                 let output_dir = output_dir.display();
@@ -405,7 +399,6 @@ fn execute_file_plan(plan: &FilePlan, mode: Mode, password: &str) -> Result<()> 
                 format!("Failed to remove encrypted file {source_path}")
             })?;
         }
-        _ => return Err(anyhow!("Mismatched file plan for requested mode")),
     }
 
     Ok(())
