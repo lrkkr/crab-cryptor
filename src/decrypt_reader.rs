@@ -15,23 +15,8 @@ pub struct DecryptReader<R: Read> {
 }
 
 fn read_ciphertext_chunk<R: Read>(reader: &mut R) -> io::Result<Vec<u8>> {
-    let mut chunk = vec![0u8; CHUNK_SIZE];
-    let mut read_len = 0;
-
-    while read_len < CHUNK_SIZE {
-        let buffer_tail = chunk
-            .get_mut(read_len..)
-            .ok_or_else(|| io::Error::other("Ciphertext chunk cursor out of bounds"))?;
-
-        match reader.read(buffer_tail) {
-            Ok(0) => break,
-            Ok(n) => read_len += n,
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-
-    chunk.truncate(read_len);
+    let mut chunk = Vec::with_capacity(CHUNK_SIZE);
+    reader.take(CHUNK_SIZE as u64).read_to_end(&mut chunk)?;
     Ok(chunk)
 }
 

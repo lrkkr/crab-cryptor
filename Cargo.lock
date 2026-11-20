@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "crab-cryptor"
-version = "4.2.1"
+version = "4.2.2"
 dependencies = [
  "aead-stream",
  "anyhow",
